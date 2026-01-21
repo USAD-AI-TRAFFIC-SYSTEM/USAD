@@ -1,0 +1,179 @@
+# USAD Configuration File
+
+# ==================== SYSTEM ====================
+system:
+  name: "USAD - Urban Smart Adaptive Dispatcher"
+  version: "1.0.0"
+  debug_mode: true
+  
+# ==================== VIDEO INPUT ====================
+video:
+  source: 0  # 0 for webcam, or path to video file
+  fps: 30
+  resolution:
+    width: 1280
+    height: 720
+  flip_horizontal: false
+  flip_vertical: false
+  
+# ==================== VISION PROCESSING ====================
+vision:
+  background_subtraction:
+    method: "MOG2"  # MOG2 or KNN
+    history: 500
+    var_threshold: 16
+    detect_shadows: false
+  
+  morphological_operations:
+    kernel_size: 5
+    opening_iterations: 2
+    closing_iterations: 2
+  
+  contour_detection:
+    min_area: 200  # minimum contour area in pixels
+    max_area: 50000  # maximum contour area in pixels
+    approximation_epsilon: 0.02
+  
+  blur:
+    kernel_size: 5
+    sigma: 1.0
+
+# ==================== VEHICLE DETECTION ====================
+detection:
+  min_vehicle_area: 300
+  max_vehicle_area: 40000
+  vehicle_width_ratio: 0.5  # min_width / max_width
+  tracking:
+    max_distance: 50  # pixels for matching frames
+    max_age: 30  # frames to keep track without detection
+    min_hits: 3  # detections needed to confirm vehicle
+
+# ==================== LANE DEFINITION ====================
+lanes:
+  north:
+    roi: [100, 50, 300, 300]  # [x1, y1, x2, y2]
+    name: "North Lane"
+    direction: "N"
+  
+  south:
+    roi: [400, 50, 600, 300]
+    name: "South Lane"
+    direction: "S"
+  
+  east:
+    roi: [700, 50, 900, 300]
+    name: "East Lane"
+    direction: "E"
+  
+  west:
+    roi: [1000, 50, 1200, 300]
+    name: "West Lane"
+    direction: "W"
+
+# ==================== SIGNAL TIMING ====================
+signal_timing:
+  default_green: 30  # seconds
+  default_yellow: 5  # seconds
+  default_red: 40   # seconds
+  
+  min_green: 15
+  max_green: 120
+  min_red: 20
+  max_red: 120
+  
+  congestion_threshold: 8  # vehicles to trigger congestion
+  light_congestion_boost: 10  # extra seconds
+  heavy_congestion_boost: 20  # extra seconds
+
+# ==================== E.Y.E. MODULE (Violation Detection) ====================
+eye_module:
+  enabled: true
+  
+  violations:
+    red_light_running:
+      enabled: true
+      tolerance_frames: 2  # grace period
+    
+    yellow_light_abuse:
+      enabled: true
+      speed_threshold: 5.0  # pixels/frame
+    
+    illegal_turns:
+      enabled: true
+      max_angle_deviation: 30  # degrees
+    
+    wrong_lane:
+      enabled: true
+      lane_crossing_threshold: 20  # pixels
+
+# ==================== LICENSE PLATE DETECTION (Optional) ====================
+ocr:
+  enabled: false
+  method: "tesseract"  # tesseract or pytesseract
+  min_confidence: 0.5
+  plate_width_range: [40, 200]
+  plate_height_range: [20, 100]
+
+# ==================== NOTIFICATION SYSTEM ====================
+notification:
+  sms_enabled: true
+  sms_provider: "twilio"  # twilio, aws_sns, or local
+  
+  emergency_contacts:
+    - name: "Emergency Services"
+      number: "+1911000000"
+  
+  email_enabled: false
+  email_recipients:
+    - "admin@usad.local"
+  
+  notification_cooldown: 60  # seconds between duplicate alerts
+
+# ==================== LOGGING ====================
+logging:
+  log_level: "INFO"  # DEBUG, INFO, WARNING, ERROR, CRITICAL
+  log_file: "logs/usad.log"
+  max_log_size: 10485760  # 10 MB
+  backup_count: 5
+  
+  log_to_console: true
+  log_to_file: true
+  
+  events_log_file: "logs/events.csv"
+  violations_log_file: "logs/violations.csv"
+
+# ==================== ARDUINO SERIAL ====================
+arduino:
+  enabled: true
+  port: "COM3"  # or /dev/ttyUSB0 on Linux
+  baudrate: 9600
+  timeout: 2
+  serial_cooldown: 0.1  # seconds between commands
+
+# ==================== DATABASE (Optional) ====================
+database:
+  enabled: false
+  type: "sqlite"  # sqlite, mysql, postgresql
+  path: "usad_traffic.db"  # for sqlite
+  # For remote: host, port, user, password, database_name
+
+# ==================== UI/DISPLAY ====================
+ui:
+  display_enabled: true
+  show_roi: true
+  show_vehicle_count: true
+  show_signal_state: true
+  show_violations: true
+  show_fps: true
+  
+  colors:
+    vehicle_bbox: [0, 255, 0]  # BGR
+    roi_region: [255, 0, 0]
+    violation_vehicle: [0, 0, 255]
+
+# ==================== PERFORMANCE ====================
+performance:
+  frame_skip: 0  # process every Nth frame
+  resize_factor: 1.0  # downscale for processing (0.5 = half size)
+  use_threading: true
+  max_workers: 4
