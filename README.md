@@ -39,6 +39,44 @@ USAD/
    pip install -r requirements.txt
    ```
 
+## Quick Start (from scratch)
+
+1. **Clone the repo**
+   ```bash
+   git clone https://github.com/USAD-AI-TRAFFIC-SYSTEM/USAD--AI-TRAFFIC-SYSTEM.git
+   cd USAD--AI-TRAFFIC-SYSTEM
+   ```
+
+2. **Create a virtual environment (Windows PowerShell)**
+   ```powershell
+   python -m venv venv
+   .\venv\Scripts\Activate.ps1
+   ```
+
+3. **Upgrade pip (recommended)**
+   ```powershell
+   python -m pip install --upgrade pip
+   ```
+
+4. **Install requirements**
+   ```powershell
+   pip install -r requirements.txt
+   ```
+
+5. **(Optional) Install Tesseract OCR** for license plate detection
+   - Windows: Install from https://github.com/UB-Mannheim/tesseract/wiki and ensure the binary is on PATH
+   - Linux: `sudo apt-get install tesseract-ocr`
+
+6. **Run the app**
+   ```powershell
+   python main.py
+   ```
+
+7. **Arduino upload**
+   - Open `arduino/traffic_signal_controller.ino` in Arduino IDE
+   - Select your board and port
+   - Upload
+
 3. Install Tesseract OCR (if using license plate detection):
    - **Windows**: Download installer from [GitHub Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
    - **Linux**: `sudo apt-get install tesseract-ocr`
