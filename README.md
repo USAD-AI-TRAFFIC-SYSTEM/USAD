@@ -1,134 +1,308 @@
 # USAD - Urban Smart Adaptive Dispatcher
 
-An adaptive traffic light signal system using classical computer vision to enhance road safety and optimize traffic flow at intersections.
+An AI-powered traffic management system that uses computer vision to enhance road safety and optimize intersection flow through intelligent, data-driven control.
 
-## Features
+## 🚦 Features
 
-- **Adaptive Signal Timing**: Dynamically adjusts green light duration based on vehicle counts
-- **Congestion Detection**: Identifies and responds to traffic congestion
-- **E.Y.E. Module**: Detects traffic violations (red-light running, yellow-light abuse, illegal turns)
-- **Emergency Response**: Sends notifications on collision detection
-- **License Plate Detection**: Optional OCR for vehicle reporting
-- **Arduino Integration**: Hardware control via serial communication
-- **Comprehensive Logging**: Event and violation tracking
+### Core Capabilities
+- **Real-time Vehicle Detection**: Uses OpenCV background subtraction and contour detection to track vehicles at intersections
+- **Accident Detection**: Automatically detects stopped or collided vehicles
+- **Emergency Notifications**: Simulates SMS and call notifications to hotlines (#911) during accidents
+- **E.Y.E. (Eyeing Your Encounter)**: Detects unsafe and illegal vehicle behaviors including:
+  - Red-light violations
+  - Yellow-light abuse
+  - Illegal turns
+- **License Plate Recognition**: Detects and reads license plates using OCR for vehicle tracking
+- **Adaptive Traffic Control**: Dynamically adjusts traffic light timing based on congestion and accidents
+- **Arduino Integration**: Controls physical traffic lights via serial communication (COM6)
+- **Analytics & Logging**: Comprehensive event logging and analytics for traffic patterns
 
-## Project Structure
+### System Architecture
 
 ```
-USAD/
-├── src/
-│   ├── vision/              # Video processing & background subtraction
-│   ├── detection/           # Vehicle detection & tracking
-│   ├── signal_control/      # Signal timing logic
-│   ├── eye_module/          # Violation detection module
-│   ├── notification/        # SMS/Email alerts
-│   ├── ocr/                 # License plate recognition
-│   └── logging/             # Event logging system
-├── arduino/                 # Arduino traffic signal controller
-├── config/                  # Configuration files
-├── logs/                    # Generated log files
-├── tests/                   # Unit tests
-└── docs/                    # Documentation
+┌─────────────────────────────────────────────────────────────┐
+│                        USAD System                          │
+├─────────────────────────────────────────────────────────────┤
+│                                                             │
+│  ┌───────────┐    ┌─────────────┐    ┌────────────────┐  │
+│  │  Camera   │───▶│   Vehicle   │───▶│   Accident     │  │
+│  │  Input    │    │  Detector   │    │   Detector     │  │
+│  └───────────┘    └─────────────┘    └────────────────┘  │
+│                           │                    │           │
+│                           ▼                    ▼           │
+│                    ┌─────────────┐    ┌────────────────┐  │
+│                    │  Violation  │    │   Emergency    │  │
+│                    │  Detector   │    │   Notifier     │  │
+│                    │   (E.Y.E.)  │    └────────────────┘  │
+│                    └─────────────┘             │           │
+│                           │                    │           │
+│                           ▼                    ▼           │
+│                    ┌─────────────────────────────────┐    │
+│                    │       Event Logger              │    │
+│                    │   (CSV Analytics & Reports)     │    │
+│                    └─────────────────────────────────┘    │
+│                                                            │
+│                    ┌─────────────────────────────────┐    │
+│                    │    Traffic Controller           │    │
+│                    │  (Arduino COM6 Integration)     │    │
+│                    └─────────────────────────────────┘    │
+│                                   │                        │
+└───────────────────────────────────┼────────────────────────┘
+                                    ▼
+                         ┌──────────────────┐
+                         │  Arduino Traffic │
+                         │  Light Hardware  │
+                         └──────────────────┘
 ```
 
-## Installation
+## 📋 Requirements
 
-1. Clone or download the repository
-2. Install Python dependencies:
-   ```bash
-   pip install -r requirements.txt
-   ```
+### Hardware
+- **Camera**: Webcam or CCTV with bird's-eye view of intersection
+- **Arduino**: Connected to COM6 with traffic light controller
+  - 4 lanes with Red, Yellow, Green LEDs each
+  - Pin configuration as per `arduino/traffic_controller.ino`
+- **Computer**: Windows PC with USB ports
 
-## Quick Start (from scratch)
+### Software
+- Python 3.8 or higher
+- Arduino IDE (for uploading traffic controller sketch)
+- Tesseract OCR (for license plate detection)
 
-1. **Clone the repo**
-   ```bash
-   git clone https://github.com/USAD-AI-TRAFFIC-SYSTEM/USAD--AI-TRAFFIC-SYSTEM.git
-   cd USAD--AI-TRAFFIC-SYSTEM
-   ```
+## 🚀 Installation
 
-2. **Create a virtual environment (Windows PowerShell)**
-   ```powershell
-   python -m venv venv
-   .\venv\Scripts\Activate.ps1
-   ```
-
-3. **Upgrade pip (recommended)**
-   ```powershell
-   python -m pip install --upgrade pip
-   ```
-
-4. **Install requirements**
-   ```powershell
-   pip install -r requirements.txt
-   ```
-
-5. **(Optional) Install Tesseract OCR** for license plate detection
-   - Windows: Install from https://github.com/UB-Mannheim/tesseract/wiki and ensure the binary is on PATH
-   - Linux: `sudo apt-get install tesseract-ocr`
-
-6. **Run the app**
-   ```powershell
-   python main.py
-   ```
-
-7. **Arduino upload**
-   - Open `arduino/traffic_signal_controller.ino` in Arduino IDE
-   - Select your board and port
-   - Upload
-
-3. Install Tesseract OCR (if using license plate detection):
-   - **Windows**: Download installer from [GitHub Tesseract](https://github.com/UB-Mannheim/tesseract/wiki)
-   - **Linux**: `sudo apt-get install tesseract-ocr`
-
-4. Upload Arduino code to your Arduino board using Arduino IDE
-
-## Configuration
-
-Edit `config/config.yaml` to customize:
-- Video source (webcam or file)
-- Lane regions (ROI coordinates)
-- Signal timing parameters
-- Notification settings
-- Arduino serial port
-
-## Usage
-
+### 1. Clone the Repository
 ```bash
+git clone https://github.com/USAD-AI-TRAFFIC-SYSTEM/USAD--AI-TRAFFIC-SYSTEM.git
+cd USAD
+```
+
+### 2. Install Python Dependencies
+```bash
+cd USAD-Model
+python -m venv venv
+venv\Scripts\activate
+pip install -r requirements.txt
 python main.py
 ```
 
-## Hardware Requirements
+### 3. Install Tesseract OCR (Optional for License Plates)
+Download and install from: https://github.com/tesseract-ocr/tesseract
 
-- Arduino Uno/Mega
-- 4 traffic light sets (12 digital pins)
-- 1 emergency light (1-2 pins)
-- Optional: buzzer, relay modules
-- Webcam or CCTV camera
+After installation, update the path in `license_plate_detector.py` if needed:
+```python
+pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+```
 
-## Arduino Pin Configuration
+### 4. Upload Arduino Sketch
+1. Open `arduino/traffic_controller.ino` in Arduino IDE
+2. Connect Arduino to COM6
+3. Upload the sketch to the Arduino
 
-- North: RED=2, YELLOW=3, GREEN=4
-- South: RED=5, YELLOW=6, GREEN=7
-- East: RED=8, YELLOW=9, GREEN=10
-- West: RED=11, YELLOW=12, GREEN=13
-- Emergency: A0
-- Buzzer: A1
+### 5. Configure Camera
+Edit `config.py` to set your camera source:
+```python
+CAMERA_SOURCE = 0  # 0 for webcam, or path to video file
+```
 
-## Serial Protocol (Python ↔ Arduino)
+## 🎮 Usage
 
-Commands: `DIRECTION,GREEN_TIME,YELLOW_TIME,RED_TIME`
+### Running the System
+```bash
+cd USAD-Model
+python main.py
+```
 
-Examples:
-- `N,30,5,40` - North: 30s green, 5s yellow, 40s red
-- `EMERGENCY` - Activate emergency mode
-- `CLEAR_EMERGENCY` - Clear emergency mode
-- `STATUS` - Request current status
+### Keyboard Controls
+- **Q** or **ESC**: Quit application
+- **R**: Reset system (clear all tracked vehicles and events)
+- **A**: Switch to automatic cycling mode
+- **1-4**: Manually activate specific lanes (Lane 1-4)
+- **S**: Print statistics and generate analytics report
 
-## License
+### Configuration
+Edit `config.py` to customize:
+- Lane regions and stop lines
+- Detection thresholds
+- Timing parameters
+- Arduino port settings
+- Camera settings
+- Feature toggles
 
-© 2026 USAD Development Team
+## 📊 Output & Analytics
 
-## Support
+### Logged Data
+All events are logged to CSV files in the `logs/` directory:
+- `traffic_events.csv`: All traffic events
+- `violations.csv`: Detailed violation records
+- `accidents.csv`: Accident records with emergency notifications
 
-For issues or questions, refer to documentation in `docs/` folder.
+### Analytics Reports
+Press **S** during operation or check `logs/analytics_report.txt` for:
+- Total violations by type and lane
+- High-risk intersections (3x+ violations)
+- Peak violation hours
+- Accident statistics
+- Emergency notification count
+
+### Sample Analytics Output
+```
+======================================================================
+USAD TRAFFIC ANALYTICS REPORT
+Generated: 2026-01-22 14:30:00
+======================================================================
+
+VIOLATION STATISTICS
+----------------------------------------------------------------------
+Total Violations: 47
+
+By Type:
+  - RED_LIGHT_VIOLATION: 18
+  - YELLOW_ABUSE: 12
+  - ILLEGAL_TURN: 17
+
+High-Risk Lanes (3x+ violations):
+  - LANE3: 21 violations (3.5x average)
+
+Peak Violation Hours:
+  - 17:00: 15 violations
+  - 8:00: 12 violations
+```
+
+## 🔧 Arduino Traffic Controller
+
+### Pin Configuration
+```
+Lane 1 (North): Green=2,  Yellow=3,  Red=4
+Lane 2 (South): Green=5,  Yellow=6,  Red=7
+Lane 3 (East):  Green=8,  Yellow=9,  Red=10
+Lane 4 (West):  Green=11, Yellow=12, Red=13
+```
+
+### Serial Commands
+The Python system sends these commands to Arduino:
+- `LANE1`: Activate Lane 1 (North)
+- `LANE2`: Activate Lane 2 (South)
+- `LANE3`: Activate Lane 3 (East)
+- `LANE4`: Activate Lane 4 (West)
+- `AUTO`: Return to automatic cycling mode
+
+### Timing
+- Green Light: 5 seconds
+- Yellow Light: 3 seconds
+- Red Light: Automatic (when other lanes are active)
+
+## 🎯 E.Y.E. Violation Detection
+
+The **Eyeing Your Encounter (E.Y.E.)** system uses classical computer vision (no machine learning) to detect:
+
+### Red Light Violations
+- Detects vehicles crossing stop line while signal is red
+- Requires minimum speed threshold to avoid false positives
+- Tracks vehicle trajectory across stop line
+
+### Yellow Light Abuse
+- Detects vehicles speeding through yellow lights
+- Calculates if vehicle could have safely stopped
+- Uses speed and distance thresholds
+
+### Illegal Turns
+- Analyzes vehicle direction vs. lane direction
+- Detects turns exceeding angle threshold
+- Confirms over multiple frames
+
+## 🚨 Emergency Notification System
+
+When an accident is detected and confirmed:
+1. **SMS Simulation**: Displays formatted emergency SMS
+2. **Call Simulation**: Simulates emergency hotline call (#911)
+3. **Event Logging**: Records notification in accident log
+4. **Cooldown**: Prevents spam notifications (60-second cooldown)
+
+### Sample Emergency Notification
+```
+╔══════════════════════════════════════════════════════════════╗
+║             EMERGENCY ACCIDENT NOTIFICATION                   ║
+╠══════════════════════════════════════════════════════════════╣
+║ Time: 2026-01-22 14:25:30                                    ║
+║ Hotline: 911                                                 ║
+║                                                              ║
+║ ACCIDENT DETAILS:                                            ║
+║ - Type: COLLISION                                            ║
+║ - Location: North Lane                                       ║
+║ - Coordinates: (640, 360)                                    ║
+║ - Vehicles Involved: 2                                       ║
+║ - Vehicle IDs: 123, 456                                      ║
+║                                                              ║
+║ IMMEDIATE RESPONSE REQUIRED                                  ║
+╚══════════════════════════════════════════════════════════════╝
+```
+
+## 🎨 Visual Interface
+
+The system displays real-time video with overlays:
+- **Vehicle Tracking**: Bounding boxes with IDs and types
+- **Lane Regions**: Color-coded lane boundaries
+- **Stop Lines**: Yellow lines marking traffic signal positions
+- **Accidents**: Red cross markers with alerts
+- **Violations**: Orange star markers with labels
+- **License Plates**: Yellow boxes with OCR text
+- **Status Panel**: System stats, FPS, counts, controls
+
+## 📝 System Behavior
+
+### Adaptive Traffic Control
+- **Congestion Detection**: Extends green time for lanes with 5+ vehicles
+- **Accident Priority**: Gives extra time to accident lanes for clearance
+- **Fair Distribution**: Maintains balanced timing across all lanes
+
+### Vehicle Classification
+Based on contour area:
+- **SMALL**: 800-2500 px² (Motorcycles, small cars)
+- **MEDIUM**: 2500-6000 px² (Sedans, SUVs)
+- **LARGE**: 6000-15000 px² (Trucks, buses)
+
+## 🐛 Troubleshooting
+
+### Arduino Not Connecting
+- Verify Arduino is connected to COM6
+- Check if port is in use by another application
+- Try different USB port
+- System will run in simulation mode if Arduino unavailable
+
+### Camera Not Opening
+- Verify `CAMERA_SOURCE` in `config.py`
+- Try different camera index (0, 1, 2, etc.)
+- Check camera permissions
+
+### Poor Vehicle Detection
+- Adjust `BACKGROUND_THRESHOLD` in `config.py`
+- Ensure good lighting conditions
+- Calibrate lane regions for your camera angle
+- Modify `MIN_VEHICLE_AREA` and `MAX_VEHICLE_AREA`
+
+### License Plate Not Detected
+- Ensure Tesseract is installed correctly
+- Adjust plate size thresholds in `config.py`
+- Check `TESSERACT_CONFIG` string
+- Works best with clear, frontal vehicle views
+
+## 📄 License
+
+This project is open-source and available under the MIT License.
+
+## 👥 Contributors
+
+USAD-AI-TRAFFIC-SYSTEM Team
+
+## 🤝 Contributing
+
+Contributions are welcome! Please feel free to submit pull requests or open issues.
+
+## 📧 Contact
+
+For questions or support, please open an issue on GitHub.
+
+---
+
+**USAD** - Making intersections safer and smarter with AI 🚦✨
