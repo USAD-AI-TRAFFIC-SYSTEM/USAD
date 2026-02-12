@@ -11,3 +11,8 @@ venv/
 # Test/cache
 .pytest_cache/
 .mypy_cache/
+
+# Generated logs/reports
+logs/*.txt
+logs/*.csv
+logs/*.log
