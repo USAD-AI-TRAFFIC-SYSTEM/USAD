@@ -72,7 +72,7 @@ class USAD:
         """Initialize camera or video source"""
         print("\n[Camera] Initializing...")
         
-        self.cap = cv2.VideoCapture(config.CAMERA_SOURCE)
+        self.cap = cv2.VideoCapture(config.CAMERA_SOURCE, cv2.CAP_DSHOW)
         
         if not self.cap.isOpened():
             print(f"[ERROR] Could not open camera source: {config.CAMERA_SOURCE}")
