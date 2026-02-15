@@ -1,32 +1,41 @@
 ======================================================================
 USAD TRAFFIC ANALYTICS REPORT
-Generated: 2026-02-15 15:21:40
+Generated: 2026-02-15 23:06:29
 ======================================================================
 
 VIOLATION STATISTICS
 ----------------------------------------------------------------------
-Total Violations: 2
+Total Violations: 34
 
 By Type:
-  - RED_LIGHT_VIOLATION: 2
+  - RED_LIGHT_VIOLATION: 34
 
 By Lane:
-  - LANE4: 1
-  - LANE2: 1
+  - LANE4: 4
+  - LANE2: 10
+  - LANE3: 19
+  - LANE1: 1
 
 Peak Violation Hours:
-  - 15:00: 2 violations
+  - 17:00: 15 violations
+  - 21:00: 7 violations
+  - 16:00: 5 violations
 
 
 ACCIDENT STATISTICS
 ----------------------------------------------------------------------
-Total Accidents: 1
-Emergency Notifications: 1
+Total Accidents: 440
+Emergency Notifications: 440
 
 By Type:
-  - COLLISION: 1
+  - COLLISION: 440
 
 By Lane:
-  - LANE2: 1
+  - LANE2: 48
+  - LANE3: 100
+  - LANE4: 88
+  - UNKNOWN: 120
+  - INTERSECTION: 53
+  - LANE1: 31
 
 ======================================================================

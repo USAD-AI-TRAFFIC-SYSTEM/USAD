@@ -318,8 +318,14 @@ class ViolationDetector:
     def draw_violations(self, frame: np.ndarray, recent_only: bool = True) -> np.ndarray:
         """Draw violation markers on frame"""
         current_time = time.time()
+        delay = float(getattr(config, "VIOLATION_SCREEN_ALERT_DELAY_SECONDS", 0.0) or 0.0)
+        delay = max(0.0, delay)
         
         for violation in self.violations:
+            # Delay on-screen alerts to reduce flicker / false positives
+            if (current_time - float(violation.timestamp)) < delay:
+                continue
+
             # Only show recent violations (last 5 seconds)
             if recent_only and (current_time - violation.timestamp) > 5:
                 continue
@@ -331,9 +337,28 @@ class ViolationDetector:
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_STAR, 20, 2)
             
             # Draw violation label
-            label = f"VIOLATION: {violation.type}"
-            cv2.putText(frame, label, (x - 80, y - 25),
-                       cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+            label = "VIOLATION"
+            cv2.putText(
+                frame,
+                label,
+                (x - 80, y - 40),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.55,
+                color,
+                2,
+            )
+
+            # Reason (human-readable)
+            reason = violation.get_description()
+            cv2.putText(
+                frame,
+                reason,
+                (x - 80, y - 22),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.42,
+                color,
+                1,
+            )
             
             # Draw vehicle ID
             vehicle_info = f"Vehicle {violation.vehicle.id}"

@@ -66,6 +66,12 @@ class USAD:
         
         # Display settings
         self.is_fullscreen = False
+
+        # Detection/alert gating
+        # We keep running vehicle detection so we can re-enable immediately when a car appears,
+        # but we hide overlays and clear accident/violation alerts after a short no-car period.
+        self._last_vehicle_seen_ts: float = time.time()
+        self._no_car_idle_mode: bool = False
         
         # Config hot reload
         script_dir = os.path.dirname(os.path.abspath(__file__))
@@ -77,11 +83,27 @@ class USAD:
     def initialize_camera(self) -> bool:
         """Initialize camera or video source"""
         print("\n[Camera] Initializing...")
-        
-        self.cap = cv2.VideoCapture(config.CAMERA_SOURCE, cv2.CAP_DSHOW)
-        
-        if not self.cap.isOpened():
-            print(f"[ERROR] Could not open camera source: {config.CAMERA_SOURCE}")
+
+        # On Windows, some OpenCV builds cannot use DSHOW by index (0/1/2).
+        # Try multiple backends for robustness.
+        source = config.CAMERA_SOURCE
+        backends = [
+            ("DSHOW", cv2.CAP_DSHOW),
+            ("MSMF", getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)),
+            ("ANY", cv2.CAP_ANY),
+        ]
+
+        self.cap = None
+        for name, backend in backends:
+            cap = cv2.VideoCapture(source, backend)
+            if cap is not None and cap.isOpened():
+                self.cap = cap
+                print(f"[Camera] ✓ Opened source {source} using {name}")
+                break
+
+        if self.cap is None or not self.cap.isOpened():
+            print(f"[ERROR] Could not open camera source: {source}")
+            print("        Try closing other camera apps, or set CAMERA_SOURCE=1.")
             return False
         
         # Set camera properties
@@ -126,6 +148,26 @@ class USAD:
         """Process a single frame"""
         # Detect vehicles
         vehicles = self.vehicle_detector.detect_vehicles(frame)
+
+        now = time.time()
+        # Consider a car "seen" only if there was a fresh detection / confirmed track update.
+        # Tracks can linger for a few seconds by design; this prevents stale boxes/alerts.
+        if bool(getattr(self.vehicle_detector, "had_detections_this_frame", False)) or bool(
+            getattr(self.vehicle_detector, "had_confirmed_updates_this_frame", False)
+        ):
+            self._last_vehicle_seen_ts = now
+        no_car_clear_seconds = float(getattr(config, "NO_CAR_CLEAR_SECONDS", 2.0))
+        no_car_clear_seconds = max(0.0, no_car_clear_seconds)
+
+        enter_idle = (not vehicles) and ((now - float(self._last_vehicle_seen_ts)) >= no_car_clear_seconds)
+        if enter_idle and not self._no_car_idle_mode:
+            # Clear lingering alerts/overlays when the scene is empty.
+            self.vehicle_detector.reset()
+            self.accident_detector.reset()
+            self.violation_detector.reset()
+            self._no_car_idle_mode = True
+        elif not enter_idle:
+            self._no_car_idle_mode = False
         
         # Get vehicle counts by lane
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane()
@@ -133,9 +175,13 @@ class USAD:
         # Update traffic signal cycle (software simulation when Arduino is disconnected)
         self.update_signal_cycle(lane_counts)
         
-        # Detect accidents
-        accidents = self.accident_detector.detect_accidents(vehicles)
-        confirmed_accidents = self.accident_detector.get_confirmed_accidents()
+        # Detect accidents (skip when in idle mode)
+        if self._no_car_idle_mode:
+            accidents = []
+            confirmed_accidents = []
+        else:
+            accidents = self.accident_detector.detect_accidents(vehicles, frame=frame)
+            confirmed_accidents = self.accident_detector.get_confirmed_accidents()
         
         # Handle emergency notifications for confirmed accidents
         for accident in confirmed_accidents:
@@ -144,15 +190,18 @@ class USAD:
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        # Detect violations
-        new_violations = self.violation_detector.detect_violations(vehicles)
+        # Detect violations (skip when in idle mode)
+        if self._no_car_idle_mode:
+            new_violations = []
+        else:
+            new_violations = self.violation_detector.detect_violations(vehicles)
         
         # Log new violations
         for violation in new_violations:
             self.event_logger.log_violation(violation)
         
         # License plate detection
-        if config.ENABLE_LICENSE_PLATE_DETECTION:
+        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
             for vehicle in vehicles:
                 if not vehicle.license_plate:
                     result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
@@ -347,15 +396,19 @@ class USAD:
         intersection = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
         cv2.polylines(frame, [intersection], True, (255, 0, 255), 2)
         
-        # Draw vehicles
-        frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
-        
-        # Draw accidents
-        frame = self.accident_detector.draw_accidents(frame)
-        
-        # Draw violations
-        if config.SHOW_VIOLATIONS:
-            frame = self.violation_detector.draw_violations(frame, recent_only=True)
+        if not self._no_car_idle_mode:
+            # Draw vehicles
+            frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
+
+            # Draw stopped/queued vehicles (not an accident)
+            frame = self.accident_detector.draw_stopped_vehicles(frame, vehicles)
+
+            # Draw accidents
+            frame = self.accident_detector.draw_accidents(frame)
+
+            # Draw violations
+            if config.SHOW_VIOLATIONS:
+                frame = self.violation_detector.draw_violations(frame, recent_only=True)
         
         # Draw license plates
         if config.ENABLE_LICENSE_PLATE_DETECTION:
@@ -375,7 +428,7 @@ class USAD:
         
         # Create semi-transparent overlay
         overlay = frame.copy()
-        panel_height = 180
+        panel_height = 220
         cv2.rectangle(overlay, (0, 0), (width, panel_height), (0, 0, 0), -1)
         frame = cv2.addWeighted(overlay, 0.7, frame, 0.3, 0)
         
@@ -470,6 +523,18 @@ class USAD:
         accident_color = (0, 0, 255) if accident_count > 0 else (255, 255, 255)
         cv2.putText(frame, f"Accidents: {accident_count}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, accident_color, 1)
+
+        # Stopped/queued cars
+        stopped_count = len(self.accident_detector.get_stopped_vehicle_ids())
+        cv2.putText(
+            frame,
+            f"Stopped cars: {stopped_count}",
+            (x_left + 140, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 255, 255),
+            1,
+        )
         
         # Violations
         violation_stats = self.violation_detector.get_statistics()
