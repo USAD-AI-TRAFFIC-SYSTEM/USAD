@@ -51,6 +51,10 @@ class USAD:
         self.lane_green_duration = config.GREEN_TIME
         self.current_phase = "GREEN"  # GREEN, YELLOW, RED
         self.phase_start_time = time.time()
+
+        # Software control when Arduino is disconnected
+        self.software_auto_mode = bool(config.AUTO_MODE_DEFAULT)
+        self.arduino_connected = False
         
         # Performance metrics
         self.fps = 0
@@ -125,6 +129,9 @@ class USAD:
         
         # Get vehicle counts by lane
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane()
+
+        # Update traffic signal cycle (software simulation when Arduino is disconnected)
+        self.update_signal_cycle(lane_counts)
         
         # Detect accidents
         accidents = self.accident_detector.detect_accidents(vehicles)
@@ -161,6 +168,105 @@ class USAD:
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
         
         return frame
+
+    def _is_arduino_connected(self) -> bool:
+        return bool(self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open)
+
+    def _lane_order(self):
+        # Stable order for round-robin cycling
+        return list(config.LANES.keys())
+
+    def _get_next_lane(self, lane_key: str) -> str:
+        order = self._lane_order()
+        if not order:
+            return lane_key
+        if lane_key not in order:
+            return order[0]
+        idx = order.index(lane_key)
+        return order[(idx + 1) % len(order)]
+
+    def _classify_lane_congestion(self, count: int) -> str:
+        if count >= getattr(config, "SIM_CONGESTED_CARS", 2):
+            return "CONGESTED"
+        if count == getattr(config, "SIM_NON_CONGESTED_CARS", 1):
+            return "NON-CONGESTED"
+        return "EMPTY"
+
+    def _compute_green_duration(self, lane_key: str, lane_counts: dict) -> int:
+        """Compute green duration for a lane based on congestion state."""
+        base = int(getattr(config, "GREEN_TIME", 5))
+        min_green = int(getattr(config, "MIN_GREEN_TIME", 3))
+        max_green = int(getattr(config, "MAX_GREEN_TIME", 15))
+
+        count = int(lane_counts.get(lane_key, 0))
+        state = self._classify_lane_congestion(count)
+
+        if not getattr(config, "ENABLE_ADAPTIVE_TIMING", True):
+            return max(min_green, min(max_green, base))
+
+        if state == "CONGESTED":
+            delta = int(getattr(config, "ADAPTIVE_GREEN_EXTEND_SECONDS", 3))
+            return max(min_green, min(max_green, base + max(0, delta)))
+        if state == "NON-CONGESTED":
+            delta = int(getattr(config, "ADAPTIVE_GREEN_REDUCE_SECONDS", 2))
+            return max(min_green, min(max_green, base - max(0, delta)))
+        # EMPTY
+        return min_green
+
+    def _apply_signal_states(self, active_lane: str, phase: str):
+        """Apply signal colors to violation detector (and UI)."""
+        # Active lane follows the phase; others are red.
+        for lane in config.LANES.keys():
+            if lane == active_lane:
+                self.violation_detector.set_traffic_signal(lane, phase)
+            else:
+                self.violation_detector.set_traffic_signal(lane, "RED")
+
+    def update_signal_cycle(self, lane_counts: dict):
+        """Advance the traffic signal cycle. Simulates signals when Arduino is disconnected."""
+        now = time.time()
+        self.arduino_connected = self._is_arduino_connected()
+
+        simulate = bool(getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True)) and not self.arduino_connected
+        if not simulate:
+            # When Arduino is connected, lane switching is handled externally.
+            # Still keep violation detector signals in sync with manual activate_lane() calls.
+            return
+
+        if not self.software_auto_mode and self.current_active_lane is None:
+            # If user is in manual mode but nothing is active, pick a default.
+            self.activate_lane(self._lane_order()[0])
+            self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
+            self._apply_signal_states(self.current_active_lane, "GREEN")
+            return
+
+        # Ensure we always have an active lane
+        if self.current_active_lane is None:
+            self.activate_lane(self._lane_order()[0])
+            self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
+            self._apply_signal_states(self.current_active_lane, "GREEN")
+            return
+
+        # Manual mode: keep current lane green (no cycling)
+        if not self.software_auto_mode:
+            self.current_phase = "GREEN"
+            self._apply_signal_states(self.current_active_lane, "GREEN")
+            return
+
+        # Auto mode: GREEN -> YELLOW -> next lane
+        if self.current_phase == "GREEN":
+            if now - self.phase_start_time >= float(self.lane_green_duration):
+                self.current_phase = "YELLOW"
+                self.phase_start_time = now
+                self._apply_signal_states(self.current_active_lane, "YELLOW")
+        elif self.current_phase == "YELLOW":
+            if now - self.phase_start_time >= float(getattr(config, "YELLOW_TIME", 3)):
+                next_lane = self._get_next_lane(self.current_active_lane)
+                self.current_active_lane = next_lane
+                self.current_phase = "GREEN"
+                self.phase_start_time = now
+                self.lane_green_duration = self._compute_green_duration(next_lane, lane_counts)
+                self._apply_signal_states(next_lane, "GREEN")
     
     def update_traffic_control(self, lane_counts: dict, accidents: list):
         """Update traffic light control based on AI logic"""
@@ -187,16 +293,16 @@ class USAD:
                 max_vehicles = count
                 congested_lane = lane_key
         
-        # If a lane has congestion, give it more green time
+        # If a lane has congestion, extend its green duration (software simulation uses _compute_green_duration)
         if max_vehicles >= config.CONGESTION_THRESHOLD:
-            if self.current_active_lane != congested_lane:
+            if self.current_active_lane == congested_lane:
+                # Refresh duration for current green lane based on latest counts
+                self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
+            elif self._is_arduino_connected():
+                # If Arduino is connected, we can still request lane activation
                 print(f"[AI] Congestion detected in {congested_lane} ({max_vehicles} vehicles)")
                 self.activate_lane(congested_lane)
-                
-                # Calculate extended green time
-                extra_time = min(max_vehicles, config.MAX_GREEN_TIME - config.GREEN_TIME)
-                self.lane_green_duration = config.GREEN_TIME + extra_time
-                print(f"[AI] Extended green time: {self.lane_green_duration}s")
+                self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
     
     def activate_lane(self, lane_key: str):
         """Activate a specific lane"""
@@ -304,6 +410,58 @@ class USAD:
         lane_text = " | ".join([f"{lane}: {count}" for lane, count in lane_counts.items()])
         cv2.putText(frame, lane_text, (x_left + 150, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
+
+        # Signal + congestion status
+        active_lane = self.current_active_lane or "-"
+        active_signal = self.violation_detector.current_signals.get(active_lane, "-") if self.current_active_lane else "-"
+        now = time.time()
+        remaining = 0.0
+        if self.current_active_lane:
+            if self.current_phase == "GREEN":
+                remaining = max(0.0, float(self.lane_green_duration) - (now - self.phase_start_time))
+            elif self.current_phase == "YELLOW":
+                remaining = max(0.0, float(getattr(config, "YELLOW_TIME", 3)) - (now - self.phase_start_time))
+
+        y_offset += 20
+        cv2.putText(
+            frame,
+            f"Active: {active_lane} | Signal: {active_signal} | Remaining: {remaining:.1f}s",
+            (x_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.45,
+            (255, 255, 255),
+            1,
+        )
+
+        y_offset += 20
+        lane_states = []
+        for lane_key in config.LANES.keys():
+            count = int(lane_counts.get(lane_key, 0))
+            state = self._classify_lane_congestion(count)
+            lane_states.append(f"{lane_key}:{state}")
+        cv2.putText(
+            frame,
+            "Lane status: " + " | ".join(lane_states),
+            (x_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (200, 200, 200),
+            1,
+        )
+
+        y_offset += 18
+        durations = []
+        for lane_key in config.LANES.keys():
+            durations.append(f"{lane_key}:{self._compute_green_duration(lane_key, lane_counts)}s")
+        cv2.putText(
+            frame,
+            "Adaptive green: " + " | ".join(durations),
+            (x_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.4,
+            (200, 200, 200),
+            1,
+        )
         
         y_offset += 25
         
@@ -363,19 +521,25 @@ class USAD:
             print("\n[Control] Switching to AUTO mode")
             if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
                 self.traffic_controller.set_auto_mode()
+            else:
+                self.software_auto_mode = True
         
         # 1-4 - Manual lane activation
         elif key == ord('1'):
             print("\n[Control] Activating LANE1")
+            self.software_auto_mode = False
             self.activate_lane("LANE1")
         elif key == ord('2'):
             print("\n[Control] Activating LANE2")
+            self.software_auto_mode = False
             self.activate_lane("LANE2")
         elif key == ord('3'):
             print("\n[Control] Activating LANE3")
+            self.software_auto_mode = False
             self.activate_lane("LANE3")
         elif key == ord('4'):
             print("\n[Control] Activating LANE4")
+            self.software_auto_mode = False
             self.activate_lane("LANE4")
         
         # S - Statistics
@@ -463,6 +627,7 @@ class USAD:
             return
         
         arduino_connected = self.initialize_arduino()
+        self.arduino_connected = arduino_connected
         
         print("\n" + "="*70)
         print("SYSTEM READY")
@@ -478,6 +643,11 @@ class USAD:
         # Create window with fullscreen capability
         cv2.namedWindow(config.DISPLAY_WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(config.DISPLAY_WINDOW_NAME, 1280, 720)
+
+        # Initialize software signal controller default lane when Arduino is not connected
+        if (not self._is_arduino_connected()) and getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True):
+            if self.current_active_lane is None and config.LANES:
+                self.activate_lane(list(config.LANES.keys())[0])
         
         # Main loop
         try:

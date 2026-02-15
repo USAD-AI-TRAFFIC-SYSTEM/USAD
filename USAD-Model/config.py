@@ -53,14 +53,25 @@ LANES = {
 INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 
 # ==================== TIMING CONFIGURATION ====================
-GREEN_TIME = 5  # seconds (matches Arduino)
+GREEN_TIME = 30  # seconds (matches Arduino)
 YELLOW_TIME = 3  # seconds (matches Arduino)
-RED_TIME = 8  # seconds (green + yellow for other lanes)
+RED_TIME = 30  # seconds (green + yellow for other lanes)
 
 # Adaptive timing adjustments
 MIN_GREEN_TIME = 3
-MAX_GREEN_TIME = 15
-CONGESTION_THRESHOLD = 5  # vehicles to trigger extended green
+MAX_GREEN_TIME = 30
+CONGESTION_THRESHOLD = 2  # simulation: 2 cars = congested lane
+
+# Simulation interpretation (used for on-screen classification)
+SIM_NON_CONGESTED_CARS = 1
+SIM_CONGESTED_CARS = 2
+
+# Adaptive signal adjustments (software simulation + UI)
+ADAPTIVE_GREEN_EXTEND_SECONDS = 10  # extra seconds for congested lanes
+ADAPTIVE_GREEN_REDUCE_SECONDS = 5  # reduce seconds for non-congested lanes
+
+# If Arduino is disconnected, simulate signal cycling in software
+SIMULATE_SIGNALS_WHEN_NO_ARDUINO = True
 
 # ==================== VEHICLE DETECTION PARAMETERS ====================
 # Color / size filtering for toy cars only

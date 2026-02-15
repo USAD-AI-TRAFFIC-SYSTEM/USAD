@@ -1,11 +1,21 @@
 ======================================================================
 USAD TRAFFIC ANALYTICS REPORT
-Generated: 2026-02-15 14:34:13
+Generated: 2026-02-15 15:21:40
 ======================================================================
 
 VIOLATION STATISTICS
 ----------------------------------------------------------------------
-Total Violations: 0
+Total Violations: 2
+
+By Type:
+  - RED_LIGHT_VIOLATION: 2
+
+By Lane:
+  - LANE4: 1
+  - LANE2: 1
+
+Peak Violation Hours:
+  - 15:00: 2 violations
 
 
 ACCIDENT STATISTICS
