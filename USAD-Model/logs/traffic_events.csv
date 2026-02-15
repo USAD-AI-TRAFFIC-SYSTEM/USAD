@@ -1,0 +1,2 @@
+timestamp,event_type,event_id,lane,vehicle_id,vehicle_type,license_plate,description,location
+2026-02-15T14:29:58.403952,ACCIDENT,1,LANE2,1,SMALL,N/A,"Collision detected between vehicles (IDs: 1, 18) in LANE2","(531, 696)"

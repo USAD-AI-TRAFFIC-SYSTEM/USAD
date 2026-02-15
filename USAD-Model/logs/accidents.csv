@@ -1,0 +1,2 @@
+timestamp,date,time,hour,accident_type,accident_id,lane,vehicle_ids,vehicle_count,duration,emergency_notified,location_x,location_y
+2026-02-15T14:29:58.403952,2026-02-15,14:29:58,14,COLLISION,1,LANE2,"1,18",2,3.24,Yes,531,696

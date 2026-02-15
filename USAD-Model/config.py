@@ -9,7 +9,7 @@ ARDUINO_BAUDRATE = 9600
 ARDUINO_TIMEOUT = 1
 
 # ==================== CAMERA CONFIGURATION ====================
-CAMERA_SOURCE = 0  # 0 for webcam, or path to video file
+CAMERA_SOURCE = 0  # 0 for laptop webcam, 1 for external camera, or path to video file
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
@@ -17,6 +17,7 @@ CAMERA_FPS = 30
 # ==================== LANE DEFINITIONS ====================
 # Define lane regions as polygons (x, y coordinates)
 # Format: [(x1, y1), (x2, y2), (x3, y3), (x4, y4)]
+# Scaled for 1280x720 resolution (2x scale from 640x480)
 LANES = {
     "LANE1": {  # North
         "name": "North",
@@ -62,12 +63,34 @@ MAX_GREEN_TIME = 15
 CONGESTION_THRESHOLD = 5  # vehicles to trigger extended green
 
 # ==================== VEHICLE DETECTION PARAMETERS ====================
-# Color detection for blue and red toy cars only
-MIN_VEHICLE_AREA = 500  # pixels - minimum toy car size
-MAX_VEHICLE_AREA = 10000  # pixels - maximum toy car size
+# Color / size filtering for toy cars only
+# Filter out tiny noise but keep toy cars
+MIN_VEHICLE_AREA = 600  # pixels - minimum toy car size
+MAX_VEHICLE_AREA = 20000  # pixels - maximum toy car size
 BACKGROUND_HISTORY = 50  # not used (color detection)
 BACKGROUND_THRESHOLD = 40  # not used (color detection)  
 DETECT_SHADOWS = False  # not used (color detection)
+
+# Focus detection on specific car colors (HSV ranges)
+# Enable so mainly your cars (red, white, blue) are detected
+ENABLE_COLOR_FILTERING = True
+
+# Car color groups (HSV). Adjust if lighting changes a lot.
+CAR_COLOR_RANGES = [
+    # Blue car
+    ((95, 80, 40), (135, 255, 255)),
+
+    # Red car (two ranges because red wraps HSV hue)
+    ((0, 120, 50), (10, 255, 255)),
+    ((170, 120, 50), (180, 255, 255)),
+
+    # White car: low saturation, high brightness
+    ((0, 0, 180), (179, 60, 255)),
+]
+
+# Minimum fraction of the detection box that must match one
+# of the car colors above. Slightly stricter to ignore road patches.
+CAR_COLOR_MIN_RATIO = 0.08  # 8%
 
 # Vehicle tracking
 MAX_TRACKING_DISTANCE = 50  # pixels
@@ -174,3 +197,20 @@ ACCIDENT_PRIORITY_DURATION = 30  # seconds to keep accident lane clear
 DEBUG_MODE = False
 SAVE_DEBUG_FRAMES = False
 DEBUG_FRAME_INTERVAL = 30  # Save every N frames
+
+# Optional debug visualization for vehicle detection
+# When enabled, opens extra OpenCV windows.
+SHOW_FG_MASK = False
+SHOW_COLOR_MASK = False
+
+# Background subtractor adaptation (used only when motion-based detection is active)
+# Small positive values keep the background slowly adapting.
+BG_LEARNING_RATE = 0.001
+
+# Prefer color segmentation when ENABLE_COLOR_FILTERING is on.
+# This detects toy cars even when stationary (no motion required).
+USE_COLOR_SEGMENTATION = True
+
+# If True, only create detections when a blob's center is inside one of the lane polygons.
+# Set to False to debug/visualize detections in the intersection area too.
+REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION = True

@@ -64,7 +64,9 @@ class USAD:
         self.is_fullscreen = False
         
         # Config hot reload
-        self.config_last_modified = os.path.getmtime('USAD-Model/config.py')
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        self.config_path = os.path.join(script_dir, 'config.py')
+        self.config_last_modified = os.path.getmtime(self.config_path)
         self.config_check_interval = 1.0  # Check every 1 second
         self.last_config_check = time.time()
         
@@ -82,6 +84,18 @@ class USAD:
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
+        
+        # Warm up camera - read a few frames to stabilize
+        print("[Camera] Warming up...")
+        for i in range(10):
+            ret, _ = self.cap.read()
+            if not ret:
+                if i == 0:
+                    print(f"[ERROR] Camera cannot read frames. Make sure:")
+                    print(f"        - Camera is not in use by another application")
+                    print(f"        - Camera {config.CAMERA_SOURCE} is properly connected")
+                    return False
+                time.sleep(0.1)
         
         print(f"[Camera] ✓ Initialized ({config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT} @ {config.CAMERA_FPS}fps)")
         return True
@@ -424,7 +438,7 @@ class USAD:
         self.last_config_check = current_time
         
         try:
-            current_mtime = os.path.getmtime('USAD-Model/config.py')
+            current_mtime = os.path.getmtime(self.config_path)
             
             if current_mtime != self.config_last_modified:
                 print("\n[Config] Detected changes in config.py, reloading...")
@@ -463,6 +477,7 @@ class USAD:
         
         # Create window with fullscreen capability
         cv2.namedWindow(config.DISPLAY_WINDOW_NAME, cv2.WINDOW_NORMAL)
+        cv2.resizeWindow(config.DISPLAY_WINDOW_NAME, 1280, 720)
         
         # Main loop
         try:

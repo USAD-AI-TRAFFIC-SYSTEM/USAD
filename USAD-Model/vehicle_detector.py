@@ -130,8 +130,9 @@ class VehicleDetector:
     
     def __init__(self):
         # Background subtractor - learns background then stays fixed
+        # Use a shorter history so detection starts faster in your setup
         self.bg_subtractor = cv2.createBackgroundSubtractorMOG2(
-            history=300,  # Learn from first 10 seconds (300 frames at 30fps)
+            history=120,  # ~4 seconds at 30fps
             varThreshold=30,
             detectShadows=False
         )
@@ -146,7 +147,17 @@ class VehicleDetector:
         # Background learning control
         self.frame_count = 0
         self.background_ready = False
-        self.learning_frames = 300  # 10 seconds at 30fps
+        # Start detecting sooner instead of waiting a long time
+        self.learning_frames = 60  # ~2 seconds at 30fps
+
+        # Detection mode
+        # When color filtering is enabled, a motion-first pipeline can fail (cars get absorbed
+        # into the learned background). Default to using color segmentation as the primary
+        # detector so stationary toy cars are still detected.
+        self.use_color_segmentation = bool(
+            getattr(config, "ENABLE_COLOR_FILTERING", False)
+            and getattr(config, "USE_COLOR_SEGMENTATION", True)
+        )
         
     def detect_vehicles(self, frame: np.ndarray) -> List[Vehicle]:
         """
@@ -158,48 +169,10 @@ class VehicleDetector:
         Returns:
             List of detected/tracked vehicles
         """
-        # Build a stable background for the first N frames
-        self.frame_count += 1
-        if not self.background_ready:
-            self.bg_subtractor.apply(frame, learningRate=1.0)
-            if self.frame_count >= self.learning_frames:
-                self.background_ready = True
-            return []
-        
-        # Freeze background model, detect changes only
-        fg_mask = self.bg_subtractor.apply(frame, learningRate=0.0)
-        _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel_open)
-        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.kernel_close)
-        
-        # Find contours
-        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
-        
-        # Extract vehicle candidates and filter by lane regions
-        detections = []
-        for contour in contours:
-            area = cv2.contourArea(contour)
-            
-            if config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA:
-                x, y, w, h = cv2.boundingRect(contour)
-                center = (x + w // 2, y + h // 2)
-                
-                # Check if vehicle center is inside any lane region
-                is_in_lane = False
-                for lane_key, lane_data in config.LANES.items():
-                    lane_region = np.array(lane_data["region"], dtype=np.int32)
-                    result = cv2.pointPolygonTest(lane_region, center, False)
-                    if result >= 0:
-                        is_in_lane = True
-                        break
-                
-                # Only add detection if it's inside a lane
-                if is_in_lane:
-                    detections.append({
-                        'center': center,
-                        'bbox': (x, y, w, h),
-                        'area': area
-                    })
+        if self.use_color_segmentation:
+            detections = self._detect_by_color(frame)
+        else:
+            detections = self._detect_by_motion(frame)
         
         # Update tracked vehicles
         self._update_tracking(detections)
@@ -215,6 +188,117 @@ class VehicleDetector:
             del self.vehicles[vehicle_id]
         
         return list(self.vehicles.values())
+
+    def _detect_by_color(self, frame: np.ndarray) -> List[dict]:
+        """Detect vehicles using full-frame HSV color segmentation."""
+        ranges = getattr(config, "CAR_COLOR_RANGES", [])
+        if not ranges:
+            return []
+
+        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+
+        combined_mask = None
+        for (lower_hsv, upper_hsv) in ranges:
+            lower = np.array(lower_hsv, dtype=np.uint8)
+            upper = np.array(upper_hsv, dtype=np.uint8)
+            mask = cv2.inRange(hsv, lower, upper)
+            combined_mask = mask if combined_mask is None else cv2.bitwise_or(combined_mask, mask)
+
+        if combined_mask is None:
+            return []
+
+        # Clean up mask
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, self.kernel_open)
+        combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, self.kernel_close)
+
+        if getattr(config, "SHOW_COLOR_MASK", False):
+            cv2.imshow("USAD - Color Mask", combined_mask)
+
+        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        detections: List[dict] = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w == 0 or h == 0:
+                continue
+
+            aspect = max(w, h) / float(min(w, h))
+            if aspect > 4.0:
+                continue
+
+            center = (x + w // 2, y + h // 2)
+
+            # Optionally require lane membership at detection-time
+            if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True):
+                is_in_lane = False
+                for lane_data in config.LANES.values():
+                    lane_region = np.array(lane_data["region"], dtype=np.int32)
+                    if cv2.pointPolygonTest(lane_region, center, False) >= 0:
+                        is_in_lane = True
+                        break
+                if not is_in_lane:
+                    continue
+
+            detections.append({"center": center, "bbox": (x, y, w, h), "area": area})
+
+        return detections
+
+    def _detect_by_motion(self, frame: np.ndarray) -> List[dict]:
+        """Detect vehicles based on motion using background subtraction."""
+        # Build a stable background for the first N frames
+        self.frame_count += 1
+        if not self.background_ready:
+            self.bg_subtractor.apply(frame, learningRate=1.0)
+            if self.frame_count >= self.learning_frames:
+                self.background_ready = True
+            return []
+
+        # Use a small learning rate instead of fully freezing.
+        # A fully frozen model can fail if cars were present during warmup.
+        learning_rate = float(getattr(config, "BG_LEARNING_RATE", 0.001))
+        fg_mask = self.bg_subtractor.apply(frame, learningRate=learning_rate)
+        _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel_open)
+        fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.kernel_close)
+
+        if getattr(config, "SHOW_FG_MASK", False):
+            cv2.imshow("USAD - FG Mask", fg_mask)
+
+        contours, _ = cv2.findContours(fg_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+
+        detections: List[dict] = []
+        for contour in contours:
+            area = cv2.contourArea(contour)
+            if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
+                continue
+
+            x, y, w, h = cv2.boundingRect(contour)
+            if w == 0 or h == 0:
+                continue
+
+            aspect = max(w, h) / float(min(w, h))
+            if aspect > 4.0:
+                continue
+
+            center = (x + w // 2, y + h // 2)
+
+            if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True):
+                is_in_lane = False
+                for lane_data in config.LANES.values():
+                    lane_region = np.array(lane_data["region"], dtype=np.int32)
+                    if cv2.pointPolygonTest(lane_region, center, False) >= 0:
+                        is_in_lane = True
+                        break
+                if not is_in_lane:
+                    continue
+
+            detections.append({"center": center, "bbox": (x, y, w, h), "area": area})
+
+        return detections
     
     def _update_tracking(self, detections: List[dict]):
         """Update vehicle tracking with new detections"""
