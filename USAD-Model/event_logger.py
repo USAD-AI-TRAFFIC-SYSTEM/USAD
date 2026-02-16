@@ -1,7 +1,4 @@
-"""
-Event Logging Module
-Logs violations, accidents, and events to CSV files with analytics
-"""
+"""CSV event logging + simple analytics/reporting."""
 
 import csv
 import os
@@ -17,23 +14,18 @@ class EventLogger:
     """Logs traffic events and generates analytics"""
     
     def __init__(self):
-        # Create logs directory
         os.makedirs(config.LOG_DIRECTORY, exist_ok=True)
         
-        # Log file paths
         self.event_log_path = os.path.join(config.LOG_DIRECTORY, config.EVENT_LOG_FILE)
         self.violation_log_path = os.path.join(config.LOG_DIRECTORY, config.VIOLATION_LOG_FILE)
         self.accident_log_path = os.path.join(config.LOG_DIRECTORY, config.ACCIDENT_LOG_FILE)
         
-        # Initialize log files
         self._initialize_log_files()
         
-        # Analytics data
         self.last_analytics_update = time.time()
         
     def _initialize_log_files(self):
         """Create log files with headers if they don't exist"""
-        # Event log
         if not os.path.exists(self.event_log_path):
             with open(self.event_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -42,7 +34,6 @@ class EventLogger:
                     'vehicle_type', 'license_plate', 'description', 'location'
                 ])
         
-        # Violation log
         if not os.path.exists(self.violation_log_path):
             with open(self.violation_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -52,7 +43,6 @@ class EventLogger:
                     'speed', 'location_x', 'location_y'
                 ])
         
-        # Accident log
         if not os.path.exists(self.accident_log_path):
             with open(self.accident_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
@@ -87,7 +77,6 @@ class EventLogger:
             writer = csv.writer(f)
             writer.writerow(row)
         
-        # Also log to general event log
         self._log_event(
             violation.type,
             violation.id,
@@ -126,7 +115,6 @@ class EventLogger:
             writer = csv.writer(f)
             writer.writerow(row)
         
-        # Also log to general event log
         vehicle_id = accident.vehicles[0].id if accident.vehicles else 'N/A'
         vehicle_type = accident.vehicles[0].vehicle_type if accident.vehicles else 'N/A'
         license_plate = accident.vehicles[0].license_plate if accident.vehicles else None

@@ -1,7 +1,4 @@
-"""
-E.Y.E. (Eyeing Your Encounter) - Violation Detection Module
-Detects unsafe and illegal vehicle behaviors using classical computer vision
-"""
+"""E.Y.E. (Eyeing Your Encounter) - traffic violation detection."""
 
 import cv2
 import numpy as np
@@ -24,11 +21,11 @@ class Violation:
         self.type = violation_type
         self.vehicle = vehicle
         self.lane = lane
-        self.traffic_signal = traffic_signal  # "RED", "YELLOW", "GREEN"
+        self.traffic_signal = traffic_signal
         self.location = location
         self.timestamp = time.time()
         
-        # Evidence
+        # Snapshot vehicle state for logging/evidence.
         self.speed = vehicle.get_speed()
         self.direction = vehicle.get_direction()
         self.license_plate = vehicle.license_plate
@@ -63,7 +60,8 @@ class ViolationDetector:
     
     def __init__(self):
         self.violations: List[Violation] = []
-        self.checked_vehicles: Dict[int, set] = {}  # vehicle_id -> set of violation types detected
+        # vehicle_id -> {"RED_LIGHT", "YELLOW_ABUSE", "ILLEGAL_TURN"} (prevents duplicates)
+        self.checked_vehicles: Dict[int, set] = {}
         self.current_signals: Dict[str, str] = {lane: "GREEN" for lane in config.LANES.keys()}
         
     def set_traffic_signal(self, lane: str, signal: str):
@@ -84,59 +82,47 @@ class ViolationDetector:
         new_violations = []
         
         for vehicle in vehicles:
-            # Initialize checked violations set for new vehicles
             if vehicle.id not in self.checked_vehicles:
                 self.checked_vehicles[vehicle.id] = set()
             
-            # Detect red light violations
             red_light_violation = self._detect_red_light_violation(vehicle)
             if red_light_violation:
                 new_violations.append(red_light_violation)
             
-            # Detect yellow light abuse
             yellow_abuse = self._detect_yellow_abuse(vehicle)
             if yellow_abuse:
                 new_violations.append(yellow_abuse)
             
-            # Detect illegal turns
             illegal_turn = self._detect_illegal_turn(vehicle)
             if illegal_turn:
                 new_violations.append(illegal_turn)
         
-        # Add to violations list
         self.violations.extend(new_violations)
         
-        # Clean up old checked vehicles
         self._cleanup_old_vehicles(vehicles)
         
         return new_violations
     
     def _detect_red_light_violation(self, vehicle: Vehicle) -> Optional[Violation]:
         """Detect red light running"""
-        # Skip if already detected for this vehicle
         if 'RED_LIGHT' in self.checked_vehicles.get(vehicle.id, set()):
             return None
         
-        # Check if vehicle has a current lane
         if not vehicle.current_lane:
             return None
         
         lane_key = vehicle.current_lane
         
-        # Check if signal is red
         if self.current_signals.get(lane_key) != "RED":
             return None
         
-        # Check if vehicle crossed stop line
         if not vehicle.crossed_stop_line:
             stop_line = config.LANES[lane_key]["stop_line"]
             if self._crossed_line(vehicle, stop_line):
                 vehicle.crossed_stop_line = True
                 
-                # Check if vehicle was moving (not stopped)
                 speed = vehicle.get_speed()
                 if speed > config.RED_LIGHT_SPEED_THRESHOLD:
-                    # Create violation
                     violation = Violation(
                         "RED_LIGHT_VIOLATION",
                         vehicle,
@@ -145,7 +131,6 @@ class ViolationDetector:
                         vehicle.center
                     )
                     
-                    # Mark as checked
                     self.checked_vehicles[vehicle.id].add('RED_LIGHT')
                     
                     return violation
@@ -154,7 +139,6 @@ class ViolationDetector:
     
     def _detect_yellow_abuse(self, vehicle: Vehicle) -> Optional[Violation]:
         """Detect speeding through yellow light"""
-        # Skip if already detected
         if 'YELLOW_ABUSE' in self.checked_vehicles.get(vehicle.id, set()):
             return None
         
@@ -163,22 +147,18 @@ class ViolationDetector:
         
         lane_key = vehicle.current_lane
         
-        # Check if signal is yellow
         if self.current_signals.get(lane_key) != "YELLOW":
             return None
         
-        # Check vehicle speed
         speed = vehicle.get_speed()
         if speed < config.YELLOW_ABUSE_SPEED_THRESHOLD:
             return None
         
-        # Check distance from stop line
         stop_line = config.LANES[lane_key]["stop_line"]
         distance_to_line = self._distance_to_line(vehicle.center, stop_line)
         
-        # If vehicle is far from stop line but speeding through yellow
+        # A vehicle far from the stop line should slow/stop; flag if it still crosses fast.
         if distance_to_line > config.YELLOW_SAFE_DISTANCE:
-            # Check if crossing stop line
             if self._crossed_line(vehicle, stop_line):
                 violation = Violation(
                     "YELLOW_ABUSE",
@@ -197,32 +177,25 @@ class ViolationDetector:
         """Detect illegal turns based on direction"""
         if not config.ENABLE_ILLEGAL_TURN:
             return None
-        # Skip if already detected
         if 'ILLEGAL_TURN' in self.checked_vehicles.get(vehicle.id, set()):
             return None
         
         if not vehicle.current_lane:
             return None
         
-        # Need sufficient movement history
         if len(vehicle.positions) < config.ILLEGAL_TURN_FRAMES:
             return None
         
         lane_key = vehicle.current_lane
         lane_direction = config.LANES[lane_key]["direction"]
         
-        # Calculate vehicle's actual direction
         vehicle_direction = vehicle.get_direction()
         
-        # Calculate angle from expected direction
+        # If a vehicle's movement strongly deviates from the lane axis, flag as a turn.
         if lane_direction == "vertical":
-            # Expected: moving up (0, -1) or down (0, 1)
-            # Check horizontal component
             horizontal_component = abs(vehicle_direction[0])
             
-            if horizontal_component > 0.7:  # Strong horizontal movement
-                # This is a turn - check if it's illegal
-                # For now, we'll flag significant turns
+            if horizontal_component > 0.7:
                 angle = np.arctan2(vehicle_direction[1], vehicle_direction[0])
                 angle_deg = np.degrees(angle)
                 
@@ -239,11 +212,9 @@ class ViolationDetector:
                     return violation
         
         elif lane_direction == "horizontal":
-            # Expected: moving left (-1, 0) or right (1, 0)
-            # Check vertical component
             vertical_component = abs(vehicle_direction[1])
             
-            if vertical_component > 0.7:  # Strong vertical movement
+            if vertical_component > 0.7:
                 angle = np.arctan2(vehicle_direction[1], vehicle_direction[0])
                 angle_deg = np.degrees(angle)
                 
@@ -266,15 +237,12 @@ class ViolationDetector:
         if len(vehicle.positions) < 2:
             return False
         
-        # Create line segment from stop line
         line_pt1 = np.array(stop_line[0], dtype=np.float32)
         line_pt2 = np.array(stop_line[1], dtype=np.float32)
         
-        # Check if vehicle trajectory crossed the line
         prev_pos = np.array(vehicle.positions[-2], dtype=np.float32)
         curr_pos = np.array(vehicle.positions[-1], dtype=np.float32)
         
-        # Line intersection check
         crossed = self._line_intersects(prev_pos, curr_pos, line_pt1, line_pt2)
         
         return crossed
@@ -294,7 +262,6 @@ class ViolationDetector:
         p1 = np.array(line[0], dtype=np.float32)
         p2 = np.array(line[1], dtype=np.float32)
         
-        # Calculate distance
         d = np.abs(np.cross(p2 - p1, p1 - p)) / np.linalg.norm(p2 - p1)
         
         return d
@@ -333,10 +300,8 @@ class ViolationDetector:
             x, y = violation.location
             color = config.COLOR_VIOLATION
             
-            # Draw violation marker
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_STAR, 20, 2)
             
-            # Draw violation label
             label = "VIOLATION"
             cv2.putText(
                 frame,
@@ -348,7 +313,6 @@ class ViolationDetector:
                 2,
             )
 
-            # Reason (human-readable)
             reason = violation.get_description()
             cv2.putText(
                 frame,
@@ -360,7 +324,6 @@ class ViolationDetector:
                 1,
             )
             
-            # Draw vehicle ID
             vehicle_info = f"Vehicle {violation.vehicle.id}"
             if violation.license_plate:
                 vehicle_info += f" ({violation.license_plate})"

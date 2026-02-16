@@ -125,12 +125,12 @@ ENABLE_BLOB_SPLITTING = True
 BLOB_SPLIT_MAX_EROSIONS = 4
 BLOB_SPLIT_MIN_AREA = 8500
 
-# ==================== ACCIDENT DETECTION PARAMETERS ====================
+# Accident detection
 STOPPED_TIME_THRESHOLD = 999999.0
 STOPPED_DISTANCE_THRESHOLD = 999999
 COLLISION_DISTANCE_THRESHOLD = 30
 
-# ==================== ON-SCREEN ALERT TIMING ====================
+# On-screen alert timing
 NO_CAR_CLEAR_SECONDS = 1.5
 
 COLLISION_SCREEN_ALERT_DELAY_SECONDS = 0.0
@@ -180,7 +180,7 @@ COLLISION_MAX_SPEED_PX_PER_SEC = 999999.0
 REQUIRE_MOTION_FOR_COLLISION = False
 COLLISION_MIN_SPEED_PX_PER_SEC = 8.0
 
-# ==================== VIOLATION DETECTION PARAMETERS (E.Y.E.) ====================
+# Violation detection (E.Y.E.)
 RED_LIGHT_CROSSING_THRESHOLD = 20  # pixels past stop line
 RED_LIGHT_SPEED_THRESHOLD = 1.5
 
@@ -191,7 +191,7 @@ ENABLE_ILLEGAL_TURN = False
 TURN_ANGLE_THRESHOLD = 45  # degrees deviation from lane direction
 ILLEGAL_TURN_FRAMES = 5  # frames to confirm illegal turn
 
-# ==================== LICENSE PLATE DETECTION ====================
+# License plate detection
 ENABLE_LICENSE_PLATE_DETECTION = False
 LP_MIN_WIDTH = 80
 LP_MAX_WIDTH = 300
@@ -203,13 +203,13 @@ LP_ASPECT_RATIO_MAX = 6.0
 # OCR Configuration
 TESSERACT_CONFIG = '--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
 
-# ==================== EMERGENCY NOTIFICATION ====================
+# Emergency notification
 EMERGENCY_HOTLINE = "911"
 ENABLE_SMS_SIMULATION = True
 ENABLE_CALL_SIMULATION = True
 NOTIFICATION_COOLDOWN = 60
 
-# ==================== LOGGING CONFIGURATION ====================
+# Logging
 LOG_DIRECTORY = "logs"
 EVENT_LOG_FILE = "traffic_events.csv"
 VIOLATION_LOG_FILE = "violations.csv"
@@ -233,7 +233,7 @@ VEHICLE_TYPES = {
     "LARGE": (6000, MAX_VEHICLE_AREA)     # Truck, bus
 }
 
-# ==================== DISPLAY CONFIGURATION ====================
+# Display
 DISPLAY_WINDOW_NAME = "USAD - AI Traffic Management System"
 SHOW_DEBUG_INFO = True
 SHOW_VEHICLE_IDS = True
@@ -250,7 +250,7 @@ COLOR_VIOLATION = (0, 165, 255)  # Orange
 COLOR_VEHICLE = (255, 255, 255)  # White
 COLOR_LICENSE_PLATE = (0, 255, 255)  # Yellow
 
-# ==================== ANALYTICS CONFIGURATION ====================
+# Analytics
 ANALYTICS_TIME_WINDOWS = {
     "MORNING_RUSH": (7, 9),     # 7 AM - 9 AM
     "AFTERNOON": (12, 14),      # 12 PM - 2 PM
@@ -262,7 +262,7 @@ ANALYTICS_TIME_WINDOWS = {
 HIGH_RISK_VIOLATION_MULTIPLIER = 3.0  # 3x more violations = high risk
 PEAK_HOURS_WINDOW = 60  # minutes for peak analysis
 
-# ==================== SYSTEM BEHAVIOR ====================
+# System behavior
 AUTO_MODE_DEFAULT = True  # Start in automatic cycling mode
 ENABLE_ADAPTIVE_TIMING = True  # Adjust green time based on congestion
 ENABLE_ACCIDENT_PRIORITY = False  # DISABLED - stationary toy cars don't have real accidents
@@ -278,4 +278,3 @@ SHOW_FG_MASK = False
 SHOW_COLOR_MASK = False
 
 BG_LEARNING_RATE = 0.001
-

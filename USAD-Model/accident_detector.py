@@ -1,7 +1,4 @@
-"""
-Accident Detection Module
-Detects stopped vehicles and collisions at intersections
-"""
+"""Accident detection (stopped vehicles + collisions)."""
 
 import cv2
 import numpy as np
@@ -20,7 +17,7 @@ class Accident:
         self.id = Accident._next_id
         Accident._next_id += 1
         
-        self.type = accident_type  # "STOPPED" or "COLLISION"
+        self.type = accident_type
         self.vehicles = vehicles
         self.location = location
         self.detected_time = time.time()
@@ -48,7 +45,6 @@ class Accident:
             if result >= 0:
                 return lane_key
         
-        # Check if in intersection center
         intersection_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
         result = cv2.pointPolygonTest(intersection_region, self.location, False)
         if result >= 0:
@@ -324,22 +320,18 @@ class AccidentDetector:
         accidents = []
         
         for vehicle in vehicles:
-            # Skip if already in an accident
             if vehicle.id in self.checked_vehicles:
                 continue
             
-            # Check if stopped in intersection or lane
             if vehicle.is_stopped:
                 stopped_duration = vehicle.get_stopped_duration()
                 
                 if stopped_duration >= config.STOPPED_TIME_THRESHOLD:
-                    # Check if in intersection center
                     intersection_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
                     in_intersection = cv2.pointPolygonTest(
                         intersection_region, vehicle.center, False
                     ) >= 0
                     
-                    # Check if in any lane
                     in_lane = False
                     for lane_key, lane_data in config.LANES.items():
                         lane_region = np.array(lane_data["region"], dtype=np.int32)
@@ -387,10 +379,7 @@ class AccidentDetector:
                 combined = m if combined is None else cv2.bitwise_or(combined, m)
             if combined is None:
                 return None
-            # IMPORTANT: do NOT use MORPH_OPEN here.
-            # Opening erodes the mask first, which can create a fake 1–3 px gap
-            # between two touching cars and causes collisions to "turn into" STOPPED.
-            # Use a tiny close to fill pinholes while preserving contact.
+            # IMPORTANT: avoid MORPH_OPEN here (can create fake 1–3px gaps).
             kernel = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (3, 3))
             combined = cv2.morphologyEx(combined, cv2.MORPH_CLOSE, kernel)
             return combined
@@ -580,7 +569,6 @@ class AccidentDetector:
         require_motion = bool(getattr(config, "REQUIRE_MOTION_FOR_COLLISION", True))
         min_motion_speed = float(getattr(config, "COLLISION_MIN_SPEED_PX_PER_SEC", 8.0))
         
-        # Check all pairs of vehicles
         for i, vehicle1 in enumerate(vehicles):
             if vehicle1.id in self.checked_vehicles:
                 continue
@@ -685,8 +673,7 @@ class AccidentDetector:
                     if gap_px > bbox_touch_px:
                         continue
 
-                # NOTE: bbox-only fallback is intentionally strict (<= ~1–2px) so we don't
-                # misclassify queued cars as collisions when segmentation is unavailable.
+                # NOTE: bbox-only fallback is intentionally strict (<= ~1–2px).
 
                 # Check if within collision gap threshold
                 # - If we have object gap, it already enforced "touch" above.
@@ -804,14 +791,11 @@ class AccidentDetector:
             
             x, y = accident.location
             
-            # Draw accident marker
             color = config.COLOR_ACCIDENT
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_CROSS, 30, 3)
             
-            # Draw circle
             cv2.circle(frame, (x, y), 40, color, 2)
             
-            # Draw accident info
             label = f"ACCIDENT #{accident.id} - {accident.type}"
             cv2.putText(frame, label, (x - 80, y - 50),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
@@ -821,7 +805,6 @@ class AccidentDetector:
             cv2.putText(frame, time_label, (x - 80, y - 30),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
-            # Draw local alert box near the collision point (kept small so it doesn't hide the scene)
             cv2.rectangle(frame, (x - 90, y - 55), (x + 90, y + 55), color, 2)
             cv2.putText(frame, "ALERT", (x - 35, y + 8),
                        cv2.FONT_HERSHEY_SIMPLEX, 0.9, color, 2)

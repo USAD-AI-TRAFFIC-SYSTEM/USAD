@@ -1,7 +1,4 @@
-"""
-Emergency Notification Module
-Simulates SMS and call notifications to emergency hotlines
-"""
+"""Emergency notifications (simulated SMS/call)."""
 
 import time
 from datetime import datetime
@@ -27,22 +24,18 @@ class EmergencyNotifier:
         Returns:
             True if notification sent (or simulated)
         """
-        # Check if already notified
         if accident.notified:
             return False
         
-        # Check cooldown period
         if accident.id in self.last_notification_time:
             elapsed = time.time() - self.last_notification_time[accident.id]
             if elapsed < config.NOTIFICATION_COOLDOWN:
                 return False
         
-        # Get accident details
         location = accident.location
         lane_name = config.LANES[accident.lane]["name"] if accident.lane in config.LANES else accident.lane
         vehicle_ids = [v.id for v in accident.vehicles]
         
-        # Create notification message
         timestamp = datetime.now().strftime('%Y-%m-%d %H:%M:%S')
         
         message = f"""
@@ -63,7 +56,6 @@ class EmergencyNotifier:
 ╚══════════════════════════════════════════════════════════════╝
 """
         
-        # Simulate SMS notification
         if config.ENABLE_SMS_SIMULATION:
             print("\n" + "="*70)
             print("📱 SMS NOTIFICATION SENT")
@@ -72,7 +64,6 @@ class EmergencyNotifier:
             
             self._log_notification("SMS", accident, timestamp)
         
-        # Simulate call notification
         if config.ENABLE_CALL_SIMULATION:
             print("\n" + "="*70)
             print("📞 EMERGENCY CALL PLACED")
@@ -86,7 +77,6 @@ class EmergencyNotifier:
             
             self._log_notification("CALL", accident, timestamp)
         
-        # Update notification status
         accident.notified = True
         self.last_notification_time[accident.id] = time.time()
         

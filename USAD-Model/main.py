@@ -1,15 +1,4 @@
-"""
-USAD - Urban Smart Adaptive Dispatcher
-Main Application
-
-AI-powered traffic management system with:
-- Computer vision vehicle detection
-- Accident detection with emergency notifications
-- E.Y.E. violation detection system
-- License plate OCR
-- Arduino traffic light control
-- Real-time analytics and logging
-"""
+"""USAD main application (camera loop + detection + control + UI overlay)."""
 
 import cv2
 import numpy as np
@@ -36,7 +25,6 @@ class USAD:
         print("AI Traffic Management System")
         print("="*70)
         
-        # Initialize components
         self.traffic_controller = TrafficController()
         self.vehicle_detector = VehicleDetector()
         self.accident_detector = AccidentDetector()
@@ -375,49 +363,39 @@ class USAD:
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
-        # Draw lane regions
         if config.SHOW_LANE_REGIONS:
             for lane_key, lane_data in config.LANES.items():
                 region = np.array(lane_data["region"], dtype=np.int32)
                 color = self._get_lane_color(lane_key)
                 cv2.polylines(frame, [region], True, color, 2)
                 
-                # Draw lane label
                 center_x = int(np.mean([p[0] for p in region]))
                 center_y = int(np.mean([p[1] for p in region]))
                 cv2.putText(frame, lane_data["name"], (center_x - 30, center_y),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.8, color, 2)
                 
-                # Draw stop line
                 stop_line = lane_data["stop_line"]
                 cv2.line(frame, stop_line[0], stop_line[1], (0, 255, 255), 3)
         
-        # Draw intersection center
         intersection = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
         cv2.polylines(frame, [intersection], True, (255, 0, 255), 2)
         
         if not self._no_car_idle_mode:
-            # Draw vehicles
             frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
 
-            # Draw stopped/queued vehicles (not an accident)
             frame = self.accident_detector.draw_stopped_vehicles(frame, vehicles)
 
-            # Draw accidents
             frame = self.accident_detector.draw_accidents(frame)
 
-            # Draw violations
             if config.SHOW_VIOLATIONS:
                 frame = self.violation_detector.draw_violations(frame, recent_only=True)
         
-        # Draw license plates
         if config.ENABLE_LICENSE_PLATE_DETECTION:
             for vehicle in vehicles:
                 if vehicle.license_plate:
                     # Plate already drawn in vehicle drawing
                     pass
         
-        # Draw status panel
         frame = self.draw_status_panel(frame, vehicles, accidents, lane_counts)
         
         return frame
@@ -426,7 +404,6 @@ class USAD:
         """Draw status information panel"""
         height, width = frame.shape[:2]
         
-        # Create semi-transparent overlay
         overlay = frame.copy()
         panel_height = 220
         cv2.rectangle(overlay, (0, 0), (width, panel_height), (0, 0, 0), -1)
@@ -436,30 +413,25 @@ class USAD:
         x_left = 20
         x_right = width // 2 + 20
         
-        # System status
         cv2.putText(frame, "USAD - AI TRAFFIC MANAGEMENT", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.7, (0, 255, 255), 2)
         
         y_offset += 30
         
-        # Arduino status
         arduino_status = "CONNECTED" if (self.traffic_controller.serial_port and 
                                         self.traffic_controller.serial_port.is_open) else "DISCONNECTED"
         status_color = (0, 255, 0) if arduino_status == "CONNECTED" else (0, 0, 255)
         cv2.putText(frame, f"Arduino: {arduino_status}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
         
-        # FPS
         cv2.putText(frame, f"FPS: {self.fps:.1f}", (x_left + 250, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         y_offset += 25
         
-        # Vehicle counts
         cv2.putText(frame, f"Vehicles: {len(vehicles)}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        # Lane counts
         lane_text = " | ".join([f"{lane}: {count}" for lane, count in lane_counts.items()])
         cv2.putText(frame, lane_text, (x_left + 150, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
@@ -686,7 +658,6 @@ class USAD:
     
     def run(self):
         """Main application loop"""
-        # Initialize components
         if not self.initialize_camera():
             print("[ERROR] Camera initialization failed")
             return
@@ -705,16 +676,13 @@ class USAD:
         print("Press 'F' to toggle fullscreen")
         print("\n" + "="*70 + "\n")
         
-        # Create window with fullscreen capability
         cv2.namedWindow(config.DISPLAY_WINDOW_NAME, cv2.WINDOW_NORMAL)
         cv2.resizeWindow(config.DISPLAY_WINDOW_NAME, 1280, 720)
 
-        # Initialize software signal controller default lane when Arduino is not connected
         if (not self._is_arduino_connected()) and getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True):
             if self.current_active_lane is None and config.LANES:
                 self.activate_lane(list(config.LANES.keys())[0])
         
-        # Main loop
         try:
             while True:
                 ret, frame = self.cap.read()
@@ -723,13 +691,10 @@ class USAD:
                     print("[ERROR] Failed to read frame")
                     break
                 
-                # Process frame
                 processed_frame = self.process_frame(frame)
                 
-                # Check for config file changes
                 self.check_config_reload()
                 
-                # Calculate FPS
                 self.frame_count += 1
                 elapsed = time.time() - self.start_time
                 if elapsed > 1.0:
@@ -737,15 +702,12 @@ class USAD:
                     self.frame_count = 0
                     self.start_time = time.time()
                 
-                # Display
                 cv2.imshow(config.DISPLAY_WINDOW_NAME, processed_frame)
                 
-                # Check if window was closed
                 if cv2.getWindowProperty(config.DISPLAY_WINDOW_NAME, cv2.WND_PROP_VISIBLE) < 1:
                     print("\n[System] Window closed by user")
                     break
                 
-                # Handle keyboard
                 key = cv2.waitKey(1) & 0xFF
                 if not self.handle_keyboard(key):
                     break
@@ -754,13 +716,10 @@ class USAD:
             print("\n\n[System] Interrupted by user")
         
         finally:
-            # Cleanup
             print("\n[System] Shutting down...")
             
-            # Print final statistics
             self.print_statistics()
             
-            # Release resources
             if self.cap:
                 self.cap.release()
             

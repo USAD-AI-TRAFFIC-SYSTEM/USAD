@@ -22,7 +22,6 @@ class Vehicle:
         self._smooth_center = np.array(center, dtype=np.float32)
         self._smooth_bbox = np.array(bbox, dtype=np.float32)
         
-        # Tracking history
         self.positions = [center]
         self.timestamps = [time.time()]
         self.lost_frames = 0
@@ -30,23 +29,18 @@ class Vehicle:
         self.seen_frames = 1
         self.confirmed = False
         
-        # Lane information
         self.current_lane = None
         self.crossed_stop_line = False
         
-        # Vehicle classification
         self.vehicle_type = self._classify_vehicle(area)
         
-        # License plate
         self.license_plate = None
         self.license_plate_confidence = 0.0
         
-        # Status flags
         self.is_stopped = False
         self.stopped_time = 0
         self.last_moved_time = time.time()
         
-        # Violation tracking
         self.violations = []
         
     def _classify_vehicle(self, area: float) -> str:
@@ -135,7 +129,6 @@ class Vehicle:
         end = np.array(self.positions[-1])
         direction = end - start
         
-        # Normalize
         norm = np.linalg.norm(direction)
         if norm > 0:
             return tuple(direction / norm)
@@ -625,7 +618,7 @@ class VehicleDetector:
         near_ratio = float(getattr(config, "TRACKING_NEAR_DISTANCE_RATIO", 0.6) or 0.6)
         near_dist = max_dist * max(0.0, min(1.0, near_ratio))
 
-        # Build all feasible matches, then assign globally by best overlap then distance.
+        # Global assignment: prefer higher overlap, then smaller distance.
         pairs = []  # (iou, distance, vehicle_id, det_idx)
         for vehicle_id, vehicle in self.vehicles.items():
             for det_idx, det in enumerate(detections):
@@ -651,7 +644,6 @@ class VehicleDetector:
             matched_vehicle_ids.add(vehicle_id)
             used_det_idxs.add(det_idx)
 
-        # Create new vehicles for unmatched detections
         min_ratio = float(getattr(config, "CAR_COLOR_MIN_RATIO", 0.0) or 0.0)
         for det_idx, det in enumerate(detections):
             if det_idx in used_det_idxs:
@@ -713,7 +705,6 @@ class VehicleDetector:
                 (x + w // 2, y + h - 2),
             ]
 
-            # Check if any of the points is inside lane polygon
             if any(cv2.pointPolygonTest(lane_region, p, False) >= 0 for p in pts):
                 vehicle.current_lane = lane_key
                 vehicles_in_lane.append(vehicle)
@@ -734,14 +725,11 @@ class VehicleDetector:
         for vehicle in vehicles:
             x, y, w, h = vehicle.bbox
             
-            # Draw bounding box
             color = config.COLOR_VEHICLE
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             
-            # Draw center point
             cv2.circle(frame, vehicle.center, 4, color, -1)
             
-            # Draw vehicle ID and info
             if config.SHOW_VEHICLE_IDS:
                 label = f"ID:{vehicle.id} {vehicle.vehicle_type}"
                 if vehicle.license_plate:
@@ -750,7 +738,6 @@ class VehicleDetector:
                 cv2.putText(frame, label, (x, y - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
             
-            # Draw trajectory
             if len(vehicle.positions) > 1:
                 points = np.array(vehicle.positions, dtype=np.int32)
                 cv2.polylines(frame, [points], False, color, 1)

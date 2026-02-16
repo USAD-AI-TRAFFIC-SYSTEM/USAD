@@ -1,7 +1,4 @@
-"""
-Traffic Controller Module
-Manages communication with Arduino traffic light controller via serial port COM6
-"""
+"""Arduino traffic light controller (serial)."""
 
 import serial
 import time
@@ -34,7 +31,6 @@ class TrafficController:
             time.sleep(2)  # Wait for Arduino to initialize
             logger.info(f"Connected to Arduino on {config.ARDUINO_PORT}")
             
-            # Read startup message
             if self.serial_port.in_waiting:
                 startup_msg = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
                 logger.info(f"Arduino: {startup_msg}")
@@ -61,7 +57,6 @@ class TrafficController:
         Returns:
             True if command sent successfully
         """
-        # Check cooldown
         current_time = time.time()
         if current_time - self.last_command_time < self.command_cooldown:
             return False
@@ -71,18 +66,15 @@ class TrafficController:
             return False
         
         try:
-            # Send command
             command = command.strip().upper()
             self.serial_port.write(f"{command}\n".encode('utf-8'))
             self.last_command_time = current_time
             
-            # Wait for response
             time.sleep(0.1)
             if self.serial_port.in_waiting:
                 response = self.serial_port.readline().decode('utf-8', errors='ignore').strip()
                 logger.info(f"Arduino response: {response}")
             
-            # Update state
             if command in ["LANE1", "LANE2", "LANE3", "LANE4"]:
                 self.current_lane = command
                 self.auto_mode = False

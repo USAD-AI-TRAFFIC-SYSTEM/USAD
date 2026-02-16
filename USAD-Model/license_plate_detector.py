@@ -1,7 +1,4 @@
-"""
-License Plate Detection Module
-Detects and reads license plates using contour detection and OCR
-"""
+"""License plate detection + optional OCR via Tesseract."""
 
 import cv2
 import numpy as np
@@ -11,7 +8,7 @@ import config
 
 try:
     import pytesseract
-    #Uncomment and set the path if needed
+    # Optional on Windows: set this if Tesseract isn't auto-discovered.
     pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
     TESSERACT_AVAILABLE = True
 except ImportError:
@@ -84,36 +81,28 @@ class LicensePlateDetector:
     
     def _find_plate_candidates(self, image: np.ndarray) -> List[Tuple[int, int, int, int]]:
         """Find potential license plate regions using contour detection"""
-        # Convert to grayscale
         gray = cv2.cvtColor(image, cv2.COLOR_BGR2GRAY)
         
-        # Apply bilateral filter to reduce noise while preserving edges
         gray = cv2.bilateralFilter(gray, 11, 17, 17)
         
-        # Edge detection
         edges = cv2.Canny(gray, 30, 200)
         
-        # Find contours
         contours, _ = cv2.findContours(edges, cv2.RETR_TREE, cv2.CHAIN_APPROX_SIMPLE)
         
         candidates = []
         
         for contour in contours:
-            # Approximate the contour
             peri = cv2.arcLength(contour, True)
             approx = cv2.approxPolyDP(contour, 0.02 * peri, True)
             
-            # License plates are typically rectangular (4 corners)
             if len(approx) >= 4:
                 x, y, w, h = cv2.boundingRect(contour)
                 
-                # Check dimensions
                 if not (config.LP_MIN_WIDTH <= w <= config.LP_MAX_WIDTH):
                     continue
                 if not (config.LP_MIN_HEIGHT <= h <= config.LP_MAX_HEIGHT):
                     continue
                 
-                # Check aspect ratio
                 aspect_ratio = w / float(h)
                 if not (config.LP_ASPECT_RATIO_MIN <= aspect_ratio <= config.LP_ASPECT_RATIO_MAX):
                     continue
@@ -124,22 +113,18 @@ class LicensePlateDetector:
     
     def _preprocess_plate(self, plate_image: np.ndarray) -> np.ndarray:
         """Preprocess license plate image for better OCR"""
-        # Convert to grayscale
         if len(plate_image.shape) == 3:
             gray = cv2.cvtColor(plate_image, cv2.COLOR_BGR2GRAY)
         else:
             gray = plate_image
         
-        # Resize for better OCR
         height, width = gray.shape
         if height < 50:
             scale = 50 / height
             gray = cv2.resize(gray, None, fx=scale, fy=scale, interpolation=cv2.INTER_CUBIC)
         
-        # Apply threshold
         _, thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)
         
-        # Morphological operations to clean up
         kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (3, 3))
         thresh = cv2.morphologyEx(thresh, cv2.MORPH_CLOSE, kernel)
         
@@ -151,10 +136,8 @@ class LicensePlateDetector:
             return None, 0.0
         
         try:
-            # Perform OCR
             data = pytesseract.image_to_data(image, config=config.TESSERACT_CONFIG, output_type=pytesseract.Output.DICT)
             
-            # Extract text with confidence
             texts = []
             confidences = []
             
@@ -168,16 +151,12 @@ class LicensePlateDetector:
             if not texts:
                 return None, 0.0
             
-            # Combine text
             full_text = ''.join(texts)
             
-            # Clean up text (remove non-alphanumeric)
             full_text = re.sub(r'[^A-Z0-9]', '', full_text.upper())
             
-            # Calculate average confidence
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0
             
-            # Validate plate format (at least 3 characters)
             if len(full_text) >= 3:
                 return full_text, avg_confidence
             
@@ -192,11 +171,9 @@ class LicensePlateDetector:
         """Draw license plate detection on frame"""
         x, y, w, h = plate_bbox
         
-        # Draw bounding box
         color = config.COLOR_LICENSE_PLATE
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
         
-        # Draw text label
         label = f"{plate_text} ({confidence:.1f}%)"
         cv2.putText(frame, label, (x, y - 10),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
