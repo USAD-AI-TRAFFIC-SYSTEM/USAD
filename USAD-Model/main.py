@@ -116,7 +116,7 @@ class USAD:
     
     def initialize_arduino(self) -> bool:
         """Initialize Arduino connection"""
-        print("\n[Arduino] Connecting to COM6...")
+        print("\n[Arduino] Connecting to COM4...")
         
         if self.traffic_controller.connect():
             print(f"[Arduino] ✓ Connected on {config.ARDUINO_PORT}")
