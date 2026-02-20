@@ -9,5 +9,6 @@
       "source.organizeImports": "explicit"
     }
   },
-  "pylance.analysis.typeCheckingMode": "basic"
+  "pylance.analysis.typeCheckingMode": "basic",
+  "python-envs.pythonProjects": []
 }
