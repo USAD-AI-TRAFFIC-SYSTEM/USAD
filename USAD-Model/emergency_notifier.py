@@ -40,17 +40,17 @@ class EmergencyNotifier:
         
         message = f"""
 ╔══════════════════════════════════════════════════════════════╗
-║             EMERGENCY ACCIDENT NOTIFICATION                   ║
+║             EMERGENCY ACCIDENT NOTIFICATION                  ║
 ╠══════════════════════════════════════════════════════════════╣
-║ Time: {timestamp}                                ║
-║ Hotline: {config.EMERGENCY_HOTLINE}                                              ║
+║ Time: {timestamp}                                            ║
+║ Hotline: {config.EMERGENCY_HOTLINE}                          ║
 ║                                                              ║
 ║ ACCIDENT DETAILS:                                            ║
-║ - Type: {accident.type:<47} ║
-║ - Location: {lane_name} Lane                                    ║
-║ - Coordinates: ({location[0]}, {location[1]})                         ║
-║ - Vehicles Involved: {len(vehicle_ids)}                                    ║
-║ - Vehicle IDs: {', '.join(map(str, vehicle_ids)):<39} ║
+║ - Type: {accident.type:<47}                                  ║
+║ - Location: {lane_name} Lane                                 ║
+║ - Coordinates: ({location[0]}, {location[1]})                ║
+║ - Vehicles Involved: {len(vehicle_ids)}                      ║
+║ - Vehicle IDs: {', '.join(map(str, vehicle_ids)):<39}        ║
 ║                                                              ║
 ║ IMMEDIATE RESPONSE REQUIRED                                  ║
 ╚══════════════════════════════════════════════════════════════╝
