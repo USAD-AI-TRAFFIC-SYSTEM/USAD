@@ -213,13 +213,13 @@ TURN_ANGLE_THRESHOLD = 45  # degrees deviation from lane direction
 ILLEGAL_TURN_FRAMES = 5  # frames to confirm illegal turn
 
 # License plate detection
-ENABLE_LICENSE_PLATE_DETECTION = False
-LP_MIN_WIDTH = 80
-LP_MAX_WIDTH = 300
-LP_MIN_HEIGHT = 20
-LP_MAX_HEIGHT = 100
-LP_ASPECT_RATIO_MIN = 2.0
-LP_ASPECT_RATIO_MAX = 6.0
+ENABLE_LICENSE_PLATE_DETECTION = True
+LP_MIN_WIDTH = 40  # lowered for toy car printed tape labels
+LP_MAX_WIDTH = 250
+LP_MIN_HEIGHT = 12  # lowered for toy car scale
+LP_MAX_HEIGHT = 80
+LP_ASPECT_RATIO_MIN = 1.8
+LP_ASPECT_RATIO_MAX = 8.0  # more flexible for various tape sizes
 
 # OCR Configuration
 TESSERACT_CONFIG = '--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'

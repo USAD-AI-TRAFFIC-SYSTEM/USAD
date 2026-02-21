@@ -1,4 +1,4 @@
-"""License plate detection + optional OCR via Tesseract."""
+"""License plate detection + OCR via EasyOCR."""
 
 import cv2
 import numpy as np
@@ -7,20 +7,26 @@ import re
 import config
 
 try:
-    import pytesseract
-    # Optional on Windows: set this if Tesseract isn't auto-discovered.
-    pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
-    TESSERACT_AVAILABLE = True
+    import easyocr
+    OCR_AVAILABLE = True
 except ImportError:
-    TESSERACT_AVAILABLE = False
-    print("Warning: pytesseract not installed. License plate OCR will be disabled.")
+    OCR_AVAILABLE = False
+    print("Warning: easyocr not installed. License plate OCR will be disabled.")
 
 
 class LicensePlateDetector:
     """Detects and reads license plates from vehicle images"""
     
     def __init__(self):
-        self.tesseract_available = TESSERACT_AVAILABLE
+        self.ocr_available = OCR_AVAILABLE
+        self.reader = None
+        if self.ocr_available:
+            try:
+                # Initialize EasyOCR reader for English text
+                self.reader = easyocr.Reader(['en'], gpu=False)
+            except Exception as e:
+                print(f"Failed to initialize EasyOCR: {e}")
+                self.ocr_available = False
         
     def detect_license_plate(self, frame: np.ndarray, vehicle_bbox: Tuple[int, int, int, int]) -> Optional[Tuple[str, float, Tuple[int, int, int, int]]]:
         """
@@ -36,7 +42,8 @@ class LicensePlateDetector:
         if not config.ENABLE_LICENSE_PLATE_DETECTION:
             return None
         
-        x, y, w, h = vehicle_bbox
+        # Ensure bbox coords are integers for slicing
+        x, y, w, h = map(int, vehicle_bbox)
         
         # Extract vehicle region with some padding
         padding = 10
@@ -68,7 +75,7 @@ class LicensePlateDetector:
             plate_processed = self._preprocess_plate(plate_roi)
             
             # Perform OCR
-            if self.tesseract_available:
+            if self.ocr_available:
                 text, confidence = self._perform_ocr(plate_processed)
                 
                 if text and confidence > best_confidence:
@@ -131,34 +138,38 @@ class LicensePlateDetector:
         return thresh
     
     def _perform_ocr(self, image: np.ndarray) -> Tuple[Optional[str], float]:
-        """Perform OCR on preprocessed plate image"""
-        if not self.tesseract_available:
+        """Perform OCR on preprocessed plate image using EasyOCR"""
+        if not self.ocr_available or self.reader is None:
             return None, 0.0
         
         try:
-            data = pytesseract.image_to_data(image, config=config.TESSERACT_CONFIG, output_type=pytesseract.Output.DICT)
+            # EasyOCR returns list of (bbox, text, confidence)
+            results = self.reader.readtext(image)
+            
+            if not results:
+                return None, 0.0
             
             texts = []
             confidences = []
             
-            for i, text in enumerate(data['text']):
+            for (bbox, text, conf) in results:
                 if text.strip():
-                    conf = float(data['conf'][i])
-                    if conf > 0:
-                        texts.append(text.strip())
-                        confidences.append(conf)
+                    texts.append(text.strip())
+                    confidences.append(conf)
             
             if not texts:
                 return None, 0.0
             
             full_text = ''.join(texts)
             
+            # Clean text: keep only alphanumeric characters
             full_text = re.sub(r'[^A-Z0-9]', '', full_text.upper())
             
             avg_confidence = sum(confidences) / len(confidences) if confidences else 0
+            avg_confidence_percent = avg_confidence * 100
             
             if len(full_text) >= 3:
-                return full_text, avg_confidence
+                return full_text, avg_confidence_percent
             
             return None, 0.0
             
@@ -184,11 +195,10 @@ class LicensePlateDetector:
 # Test function
 if __name__ == "__main__":
     print("License Plate Detector Test")
-    print(f"Tesseract available: {TESSERACT_AVAILABLE}")
+    print(f"EasyOCR available: {OCR_AVAILABLE}")
     
-    if TESSERACT_AVAILABLE:
+    if OCR_AVAILABLE:
         detector = LicensePlateDetector()
         print("✓ License plate detector initialized")
     else:
-        print("✗ Install pytesseract: pip install pytesseract")
-        print("✗ Install Tesseract-OCR: https://github.com/tesseract-ocr/tesseract")
+        print("✗ Install easyocr: pip install easyocr")
