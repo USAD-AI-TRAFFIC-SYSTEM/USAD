@@ -266,8 +266,39 @@ class USAD:
 
         simulate = bool(getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True)) and not self.arduino_connected
         if not simulate:
-            # When Arduino is connected, lane switching is handled externally.
-            # Still keep violation detector signals in sync with manual activate_lane() calls.
+            # When Arduino is connected, we need to sync the model's state with Arduino
+            # If in auto mode, cycle in sync with Arduino's timing (5s green, 3s yellow)
+            if self.software_auto_mode:
+                # Sync with Arduino's auto cycling timing
+                arduino_green_time = 5.0  # Arduino uses 5 seconds green
+                arduino_yellow_time = 3.0  # Arduino uses 3 seconds yellow
+                
+                # Ensure we have an active lane
+                if self.current_active_lane is None:
+                    self.current_active_lane = self._lane_order()[0]
+                    self.current_phase = "GREEN"
+                    self.phase_start_time = now
+                    self.lane_green_duration = arduino_green_time
+                    self._apply_signal_states(self.current_active_lane, "GREEN")
+                    return
+                
+                # Cycle in sync with Arduino's timing
+                if self.current_phase == "GREEN":
+                    if now - self.phase_start_time >= arduino_green_time:
+                        self.current_phase = "YELLOW"
+                        self.phase_start_time = now
+                        self._apply_signal_states(self.current_active_lane, "YELLOW")
+                elif self.current_phase == "YELLOW":
+                    if now - self.phase_start_time >= arduino_yellow_time:
+                        # Move to next lane (same order as Arduino)
+                        next_lane = self._get_next_lane(self.current_active_lane)
+                        self.current_active_lane = next_lane
+                        self.current_phase = "GREEN"
+                        self.phase_start_time = now
+                        self.lane_green_duration = arduino_green_time
+                        self._apply_signal_states(next_lane, "GREEN")
+            # When not in auto mode, lane switching is handled by manual activate_lane() calls
+            # Still keep violation detector signals in sync
             return
 
         if not self.software_auto_mode and self.current_active_lane is None:
@@ -338,8 +369,24 @@ class USAD:
             elif self._is_arduino_connected():
                 # If Arduino is connected, we can still request lane activation
                 print(f"[AI] Congestion detected in {congested_lane} ({max_vehicles} vehicles)")
+                self.software_auto_mode = False  # Exit auto mode for congestion handling
                 self.activate_lane(congested_lane)
                 self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
+        else:
+            # Congestion cleared - return to auto mode if we were in congestion mode
+            if not self.software_auto_mode:
+                print(f"[AI] Congestion cleared (max vehicles: {max_vehicles}), returning to AUTO mode")
+                if self._is_arduino_connected():
+                    self.traffic_controller.set_auto_mode()
+                    # Reset model state to sync with Arduino's auto cycling
+                    # Arduino starts from lane 0 (LANE1) when entering auto mode
+                    self.current_active_lane = self._lane_order()[0]
+                    self.current_phase = "GREEN"
+                    self.phase_start_time = time.time()
+                    # Use Arduino's timing (5s green, 3s yellow) when synced with Arduino
+                    self.lane_green_duration = 5.0  # Arduino uses 5 seconds green
+                    self._apply_signal_states(self.current_active_lane, "GREEN")
+                self.software_auto_mode = True
     
     def activate_lane(self, lane_key: str):
         """Activate a specific lane"""

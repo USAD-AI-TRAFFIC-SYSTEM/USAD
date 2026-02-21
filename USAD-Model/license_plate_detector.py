@@ -42,8 +42,7 @@ class LicensePlateDetector:
         if not config.ENABLE_LICENSE_PLATE_DETECTION:
             return None
         
-        # Ensure bbox coords are integers for slicing
-        x, y, w, h = map(int, vehicle_bbox)
+        x, y, w, h = vehicle_bbox
         
         # Extract vehicle region with some padding
         padding = 10

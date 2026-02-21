@@ -1,7 +1,7 @@
 """USAD configuration."""
 
 # Arduino
-ARDUINO_PORT = "COM4"
+ARDUINO_PORT = "COM5"
 ARDUINO_BAUDRATE = 9600
 ARDUINO_TIMEOUT = 1
 
