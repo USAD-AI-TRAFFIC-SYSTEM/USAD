@@ -222,7 +222,7 @@ When an accident is detected and confirmed:
 ### Sample Emergency Notification
 ```
 ╔══════════════════════════════════════════════════════════════╗
-║             EMERGENCY ACCIDENT NOTIFICATION                   ║
+║             EMERGENCY ACCIDENT NOTIFICATION                  ║
 ╠══════════════════════════════════════════════════════════════╣
 ║ Time: 2026-01-22 14:25:30                                    ║
 ║ Hotline: 911                                                 ║
