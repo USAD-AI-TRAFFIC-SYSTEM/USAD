@@ -473,3 +473,5 @@ timestamp,event_type,event_id,lane,vehicle_id,vehicle_type,license_plate,descrip
 2026-02-15T23:05:25.981507,ACCIDENT,3,LANE3,8,LARGE,N/A,"Collision detected between vehicles (IDs: 8, 10) in LANE3","(763, 338)"
 2026-02-15T23:05:49.158643,RED_LIGHT_VIOLATION,1,LANE3,11,LARGE,N/A,Vehicle 11 ran red light in LANE3,"(736, 351)"
 2026-02-15T23:05:49.804450,ACCIDENT,5,INTERSECTION,11,LARGE,N/A,"Collision detected between vehicles (IDs: 11, 12) in INTERSECTION","(657, 317)"
+2026-02-21T11:03:22.931324,RED_LIGHT_VIOLATION,1,LANE3,4,MEDIUM,N/A,Vehicle 4 ran red light in LANE3,"(693, 226)"
+2026-02-21T11:03:23.742907,ACCIDENT,1,LANE3,4,LARGE,N/A,"Collision detected between vehicles (IDs: 4, 5) in LANE3","(739, 223)"
