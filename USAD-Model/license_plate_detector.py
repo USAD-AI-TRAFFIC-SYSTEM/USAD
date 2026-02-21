@@ -169,7 +169,7 @@ class LicensePlateDetector:
     def draw_license_plate(self, frame: np.ndarray, plate_text: str, 
                           plate_bbox: Tuple[int, int, int, int], confidence: float) -> np.ndarray:
         """Draw license plate detection on frame"""
-        x, y, w, h = plate_bbox
+        x, y, w, h = map(int, plate_bbox)
         
         color = config.COLOR_LICENSE_PLATE
         cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)

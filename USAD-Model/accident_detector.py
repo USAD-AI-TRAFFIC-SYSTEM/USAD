@@ -193,6 +193,12 @@ class AccidentDetector:
                 # Start a new tracked accident candidate
                 evidence.last_seen_time = now
                 evidence.confidence_frames = 1
+
+                # If the configured confirmation threshold is 1 (common for collisions),
+                # confirm immediately so the UI can alert on the same frame.
+                if (not evidence.confirmed) and (evidence.confidence_frames >= int(getattr(evidence, "_confirm_frames_required", 1))):
+                    evidence.confirmed = True
+                    evidence.confirmed_time = now
                 self.accidents[evidence.id] = evidence
                 self._accident_key_to_id[key] = evidence.id
 
@@ -303,7 +309,7 @@ class AccidentDetector:
         for vehicle in vehicles:
             if vehicle.id not in stopped_ids:
                 continue
-            x, y, w, h = vehicle.bbox
+            x, y, w, h = map(int, vehicle.bbox)
             cv2.putText(
                 frame,
                 "STOPPED",
@@ -585,16 +591,26 @@ class AccidentDetector:
                 overlap_max = float(getattr(config, "COLLISION_DUPLICATE_OVERLAP_MAX", 0.65))
                 overlap_ratio = _overlap_over_min_area(vehicle1.bbox, vehicle2.bbox)
                 if overlap_ratio >= overlap_max:
-                    # Only treat as duplicate if the two tracks are essentially on top
-                    # of each other (same object detected twice). Real collisions can
-                    # still overlap somewhat due to bbox jitter.
+                    # High overlap can be a duplicate track OR a real collision after impact.
+                    # Only suppress as duplicate when the two tracks are extremely co-located
+                    # AND at least one of them is "new" / likely spawned by a split/jitter.
                     c1 = np.array(vehicle1.center, dtype=np.float32)
                     c2 = np.array(vehicle2.center, dtype=np.float32)
                     center_dist = float(np.linalg.norm(c1 - c2))
                     w1, h1 = vehicle1.bbox[2], vehicle1.bbox[3]
                     w2, h2 = vehicle2.bbox[2], vehicle2.bbox[3]
                     scale = float(max(1, min(w1, h1, w2, h2)))
-                    if center_dist <= (0.35 * scale):
+
+                    now_ts = time.time()
+                    delay = float(getattr(config, "ACCIDENT_DETECTION_DELAY_SECONDS", 1.5))
+                    v1_seen = float(self._vehicle_first_seen.get(int(vehicle1.id), now_ts))
+                    v2_seen = float(self._vehicle_first_seen.get(int(vehicle2.id), now_ts))
+                    v1_is_new = (now_ts - v1_seen) < max(0.1, delay)
+                    v2_is_new = (now_ts - v2_seen) < max(0.1, delay)
+                    v1_unconfirmed = not bool(getattr(vehicle1, "confirmed", False))
+                    v2_unconfirmed = not bool(getattr(vehicle2, "confirmed", False))
+
+                    if center_dist <= (0.25 * scale) and (v1_is_new or v2_is_new or v1_unconfirmed or v2_unconfirmed):
                         continue
 
                 pair_key = (min(vehicle1.id, vehicle2.id), max(vehicle1.id, vehicle2.id))
@@ -789,7 +805,7 @@ class AccidentDetector:
                 if (now - t0) < delay:
                     continue
             
-            x, y = accident.location
+            x, y = map(int, accident.location)
             
             color = config.COLOR_ACCIDENT
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_CROSS, 30, 3)

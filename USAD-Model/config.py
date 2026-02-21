@@ -105,7 +105,17 @@ MIN_TRACK_CONFIRM_FRAMES = 1
 
 CANDIDATE_VEHICLE_LOST_FRAMES = 8
 
-TRACK_SMOOTHING_ALPHA = 0.7
+# Smoothing alpha: higher = more lag but less jitter. During collisions, higher is better.
+# At collision-time, this heavily dampens segmentation mask changes.
+TRACK_SMOOTHING_ALPHA = 0.50
+
+# Prediction parameters (used when a confirmed track misses a frame).
+# Lower max_dt = less aggressive prediction; lower max_shift = less bbox jitter during collisions.
+TRACK_PREDICT_MAX_DT = 0.15  # seconds (very conservative)
+TRACK_PREDICT_MAX_SHIFT_PX = 8  # pixels (tight constraint)
+
+# Cap bbox movement from segmentation noise (during active detection, not prediction).
+TRACK_BBOX_MAX_SHIFT_PER_FRAME = 10  # pixels (limits jitter when updating with new detections)
 
 TRACK_PRESENCE_MIN_RATIO = 0.02
 
@@ -118,6 +128,17 @@ MIN_VEHICLE_EXTENT = 0.42  # contour area / bbox area (filters thin/line-like bl
 MAX_VEHICLE_EXTENT = 0.95
 
 MIN_VEHICLE_SOLIDITY = 0.88
+
+# Extra filtering to suppress small/non-vehicle blobs.
+# - `FG_MASK_MIN_RATIO` rejects mostly-hollow motion blobs inside the bbox (motion detection).
+# - `NEW_TRACK_MIN_AREA_SCALE` makes it harder for tiny blobs to spawn NEW tracks.
+# - Small-blob strict settings apply tighter extent/solidity thresholds only to small areas.
+FG_MASK_MIN_RATIO = 0.12
+NEW_TRACK_MIN_AREA_SCALE = 1.10
+SMALL_BLOB_STRICT_AREA_SCALE = 1.60
+MIN_VEHICLE_CIRCULARITY = 0.04
+MIN_VEHICLE_EXTENT_SMALL = MIN_VEHICLE_EXTENT + 0.08
+MIN_VEHICLE_SOLIDITY_SMALL = min(0.99, MIN_VEHICLE_SOLIDITY + 0.04)
 
 COLOR_MASK_CLOSE_KERNEL = (3, 3)
 
@@ -232,6 +253,11 @@ VEHICLE_TYPES = {
     "MEDIUM": (2500, 6000),    # Sedan, SUV
     "LARGE": (6000, MAX_VEHICLE_AREA)     # Truck, bus
 }
+
+# Restrict detections/tracks to these type labels (set to None/empty to allow all).
+# For the current toy-car setup, we only want the main object size and to ignore
+# fingers/hand movement which usually shows up as SMALL/MEDIUM blobs.
+ALLOWED_VEHICLE_TYPES = ("LARGE",)
 
 # Display
 DISPLAY_WINDOW_NAME = "USAD - AI Traffic Management System"

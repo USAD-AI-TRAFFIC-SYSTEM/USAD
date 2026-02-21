@@ -523,7 +523,7 @@ class USAD:
         y_offset += 30
         
         # Controls
-        cv2.putText(frame, "Controls: [Q]uit | [R]eset | [A]uto | [1-4]Lanes | [S]tats | [F]ullscreen",
+        cv2.putText(frame, "Controls: [Q]uit | [R]eset | [B]g reset | [A]uto | [1-4]Lanes | [S]tats | [F]ullscreen",
                    (x_left, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
         return frame
@@ -547,11 +547,17 @@ class USAD:
         # R - Reset
         elif key == ord('r') or key == ord('R'):
             print("\n[System] Resetting...")
-            self.vehicle_detector.reset()
+            self.vehicle_detector.reset(reset_background=False, verbose=False)
             self.accident_detector.reset()
             self.violation_detector.reset()
             self.emergency_notifier.reset()
             print("[System] ✓ Reset complete")
+
+        # B - Reset background learning
+        elif key == ord('b') or key == ord('B'):
+            print("\n[System] Resetting background learning...")
+            self.vehicle_detector.reset(reset_background=True, verbose=True)
+            print("[System] ✓ Background learning reset")
         
         # A - Auto mode
         elif key == ord('a') or key == ord('A'):
@@ -670,6 +676,7 @@ class USAD:
         print("="*70)
         print("\nPress 'Q' to quit")
         print("Press 'R' to reset")
+        print("Press 'B' to reset background learning")
         print("Press 'A' for auto mode")
         print("Press '1-4' to activate specific lanes")
         print("Press 'S' for statistics")

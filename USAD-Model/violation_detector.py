@@ -297,7 +297,7 @@ class ViolationDetector:
             if recent_only and (current_time - violation.timestamp) > 5:
                 continue
             
-            x, y = violation.location
+            x, y = map(int, violation.location)
             color = config.COLOR_VIOLATION
             
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_STAR, 20, 2)
