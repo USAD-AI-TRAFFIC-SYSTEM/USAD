@@ -13,7 +13,7 @@
   - Lane 3 (East): Green=8, Yellow=9, Red=10
   - Lane 4 (West): Green=11, Yellow=12, Red=13
  
-  Serial Commands (9600 baud, COM6):
+  Serial Commands (9600 baud, COM4):
   - LANE1, LANE2, LANE3, LANE4: Activate specific lane
   - AUTO: Return to automatic cycling mode
 */
@@ -65,7 +65,7 @@ int red_pins[] = {LANE1_RED, LANE2_RED, LANE3_RED, LANE4_RED};
 
 // ==================== SETUP ====================
 void setup() {
-  // Initialize Serial Communication (COM6)
+  // Initialize Serial Communication (COM4)
   Serial.begin(9600);
  
   // Initialize all traffic light pins as OUTPUT

@@ -14,7 +14,7 @@ An AI-powered traffic management system that uses computer vision to enhance roa
   - Illegal turns
 - **License Plate Recognition**: Detects and reads license plates using OCR for vehicle tracking
 - **Adaptive Traffic Control**: Dynamically adjusts traffic light timing based on congestion and accidents
-- **Arduino Integration**: Controls physical traffic lights via serial communication (COM6)
+- **Arduino Integration**: Controls physical traffic lights via serial communication (4)
 - **Analytics & Logging**: Comprehensive event logging and analytics for traffic patterns
 
 ### System Architecture
@@ -24,30 +24,30 @@ An AI-powered traffic management system that uses computer vision to enhance roa
 │                        USAD System                          │
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
-│  ┌───────────┐    ┌─────────────┐    ┌────────────────┐  │
-│  │  Camera   │───▶│   Vehicle   │───▶│   Accident     │  │
-│  │  Input    │    │  Detector   │    │   Detector     │  │
-│  └───────────┘    └─────────────┘    └────────────────┘  │
-│                           │                    │           │
-│                           ▼                    ▼           │
-│                    ┌─────────────┐    ┌────────────────┐  │
-│                    │  Violation  │    │   Emergency    │  │
-│                    │  Detector   │    │   Notifier     │  │
-│                    │   (E.Y.E.)  │    └────────────────┘  │
-│                    └─────────────┘             │           │
-│                           │                    │           │
-│                           ▼                    ▼           │
-│                    ┌─────────────────────────────────┐    │
-│                    │       Event Logger              │    │
-│                    │   (CSV Analytics & Reports)     │    │
-│                    └─────────────────────────────────┘    │
-│                                                            │
-│                    ┌─────────────────────────────────┐    │
-│                    │    Traffic Controller           │    │
-│                    │  (Arduino COM6 Integration)     │    │
-│                    └─────────────────────────────────┘    │
-│                                   │                        │
-└───────────────────────────────────┼────────────────────────┘
+│  ┌───────────┐    ┌─────────────┐    ┌────────────────┐     │
+│  │  Camera   │───▶│   Vehicle   │───▶│   Accident     │    │
+│  │  Input    │    │  Detector   │    │   Detector     │     │
+│  └───────────┘    └─────────────┘    └────────────────┘     │
+│                           │                    │            │
+│                           ▼                    ▼            │
+│                    ┌─────────────┐    ┌────────────────┐    │
+│                    │  Violation  │    │   Emergency    │    │
+│                    │  Detector   │    │   Notifier     │    │
+│                    │   (E.Y.E.)  │    └────────────────┘    │
+│                    └─────────────┘             │            │
+│                           │                    │            │
+│                           ▼                    ▼            │
+│                    ┌─────────────────────────────────┐      │
+│                    │       Event Logger              │      │
+│                    │   (CSV Analytics & Reports)     │      │
+│                    └─────────────────────────────────┘      │
+│                                                             │
+│                    ┌─────────────────────────────────┐      │
+│                    │    Traffic Controller           │      │
+│                    │  (Arduino COM4 Integration)     │      │
+│                    └─────────────────────────────────┘      │
+│                                   │                         │
+└───────────────────────────────────┼──────────────────────── ┘
                                     ▼
                          ┌──────────────────┐
                          │  Arduino Traffic │
@@ -59,7 +59,7 @@ An AI-powered traffic management system that uses computer vision to enhance roa
 
 ### Hardware
 - **Camera**: Webcam or CCTV with bird's-eye view of intersection
-- **Arduino**: Connected to COM6 with traffic light controller
+- **Arduino**: Connected to COM4 with traffic light controller
   - 4 lanes with Red, Yellow, Green LEDs each
   - Pin configuration as per `arduino/traffic_controller.ino`
 - **Computer**: Windows PC with USB ports
@@ -78,11 +78,31 @@ cd USAD
 ```
 
 ### 2. Install Python Dependencies
+
+**⚠️ IMPORTANT: Make sure you're in the USAD root directory (not USAD-Model) throughout this process**
+
+#### Windows (PowerShell/Command Prompt):
 ```bash
-cd USAD-Model
+# Create virtual environment in the USAD root directory
 python -m venv venv
-venv\Scripts\activate
+
+# Activate the virtual environment
+.\venv\Scripts\Activate.ps1
+
+# Install dependencies from the root directory
 pip install -r requirements.txt
+
+# Run the application
+cd USAD-Model
+..\venv\Scripts\python.exe main.py
+```
+
+#### Linux/Mac:
+```bash
+python3 -m venv venv
+source venv/bin/activate
+pip install -r requirements.txt
+cd USAD-Model
 python main.py
 ```
 
@@ -96,7 +116,7 @@ pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tessera
 
 ### 4. Upload Arduino Sketch
 1. Open `arduino/traffic_controller.ino` in Arduino IDE
-2. Connect Arduino to COM6
+2. Connect Arduino to COM4
 3. Upload the sketch to the Arduino
 
 ### 5. Configure Camera
@@ -264,8 +284,26 @@ Based on contour area:
 
 ## 🐛 Troubleshooting
 
+### ModuleNotFoundError: No module named 'cv2' (or other packages)
+This occurs when packages are installed in the system Python but not in the virtual environment.
+
+**Solution:**
+1. Make sure you're in the USAD root directory (not USAD-Model)
+2. Ensure your virtual environment is activated:
+   - Windows: `.\venv\Scripts\Activate.ps1`
+   - Linux/Mac: `source venv/bin/activate`
+3. Reinstall dependencies in the venv:
+   ```bash
+   pip install -r requirements.txt
+   ```
+4. On Windows, if `python main.py` still fails, explicitly use the venv's Python:
+   ```bash
+   cd USAD-Model
+   ..\venv\Scripts\python.exe main.py
+   ```
+
 ### Arduino Not Connecting
-- Verify Arduino is connected to COM6
+- Verify Arduino is connected to COM4
 - Check if port is in use by another application
 - Try different USB port
 - System will run in simulation mode if Arduino unavailable

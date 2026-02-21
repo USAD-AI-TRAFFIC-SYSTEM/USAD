@@ -21,7 +21,7 @@ class TrafficController:
         self.command_cooldown = 0.5  # seconds
         
     def connect(self) -> bool:
-        """Connect to Arduino on COM6"""
+        """Connect to Arduino on 4"""
         try:
             self.serial_port = serial.Serial(
                 port=config.ARDUINO_PORT,
