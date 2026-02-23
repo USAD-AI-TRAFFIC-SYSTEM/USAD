@@ -42,7 +42,8 @@ class LicensePlateDetector:
         if not config.ENABLE_LICENSE_PLATE_DETECTION:
             return None
         
-        x, y, w, h = vehicle_bbox
+        # Bounding boxes may be floats from detectors; convert safely to ints for slicing
+        x, y, w, h = [int(round(v)) for v in vehicle_bbox]
         
         # Extract vehicle region with some padding
         padding = 10

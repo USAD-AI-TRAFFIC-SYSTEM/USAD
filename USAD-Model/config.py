@@ -99,7 +99,16 @@ CAR_COLOR_MIN_RATIO = 0.02
 MAX_TRACKING_DISTANCE = 80  # pixels
 MIN_TRACKING_IOU = 0.05
 TRACKING_NEAR_DISTANCE_RATIO = 0.6
-VEHICLE_LOST_FRAMES = 60  # ~2s at 30fps
+# Track removal: prefer time-based removal for consistent behavior even if FPS dips.
+# Frame-based TTL is kept as a fallback.
+VEHICLE_LOST_FRAMES = 25  # fallback (~<1s at 30fps)
+
+# Remove tracks when they have not been observed for this many seconds.
+# This ensures boxes disappear quickly (<1s) regardless of actual FPS.
+TRACK_LOST_REMOVE_SECONDS = 0.85
+
+# If intersection ROI gating is enabled, remove tracks after they remain outside for this long.
+ROI_OUTSIDE_REMOVE_SECONDS = 0.85
 
 MIN_TRACK_CONFIRM_FRAMES = 1
 
@@ -108,6 +117,45 @@ CANDIDATE_VEHICLE_LOST_FRAMES = 8
 # Smoothing alpha: higher = more lag but less jitter. During collisions, higher is better.
 # At collision-time, this heavily dampens segmentation mask changes.
 TRACK_SMOOTHING_ALPHA = 0.50
+
+# Extra stabilization when cars are close/touching.
+# These are intentionally conservative: they only kick in when detections are near/overlapping.
+TRACK_CROWD_DISTANCE_PX = 75.0
+TRACK_CROWD_IOU = 0.05
+TRACK_OVERLAP_IOU = 0.08
+
+# Boost smoothing during crowded/overlap (higher = more stable, more lag).
+TRACK_STABILITY_ALPHA_MULT = 1.35
+TRACK_OVERLAP_ALPHA_MULT = 1.20
+
+# During overlap, keep the box stable but DO NOT let it drift away.
+TRACK_OVERLAP_MAX_DET_DEV_PX = 28
+
+# Prevent distance-only matching when cars touch/overlap (reduces ID swaps/fly-away).
+TRACK_MATCH_MIN_IOU_WHEN_CROWDED = 0.02
+TRACK_MATCH_MIN_IOU_WHEN_OVERLAP = 0.06
+TRACK_MATCH_MAX_DIST_WITHOUT_IOU_PX = 10.0
+
+# Stationary lock: freeze bbox when the object isn't moving.
+# Enter lock when per-frame center shift <= ENTER, exit when > EXIT.
+TRACK_STATIONARY_ENTER_PX = 2.0
+TRACK_STATIONARY_EXIT_PX = 6.0
+
+# Keep collision tracks alive through brief detection failures (prevents alert drop).
+COLLISION_TRACK_PREDICT_FOR_LOST_FRAMES = 60
+COLLISION_TRACK_GRACE_SECONDS = 2.5
+
+# Overlap behavior: keep bbox size stable and centered on smoothed track center.
+TRACK_OVERLAP_LOCK_SIZE = True
+TRACK_OVERLAP_CENTER_BOX = True
+
+# Stronger jitter deadband + median filtering during overlap only.
+TRACK_OVERLAP_DEADBAND_PX = 4
+TRACK_OVERLAP_SIZE_DEADBAND_PX = 4
+TRACK_STABILITY_BBOX_MEDIAN_WINDOW = 3
+TRACK_STABILITY_CENTER_MEDIAN_WINDOW = 3
+TRACK_OVERLAP_BBOX_MEDIAN_WINDOW = 5
+TRACK_OVERLAP_CENTER_MEDIAN_WINDOW = 5
 
 # Prediction parameters (used when a confirmed track misses a frame).
 # Lower max_dt = less aggressive prediction; lower max_shift = less bbox jitter during collisions.
@@ -140,11 +188,20 @@ MIN_VEHICLE_CIRCULARITY = 0.04
 MIN_VEHICLE_EXTENT_SMALL = MIN_VEHICLE_EXTENT + 0.08
 MIN_VEHICLE_SOLIDITY_SMALL = min(0.99, MIN_VEHICLE_SOLIDITY + 0.04)
 
-COLOR_MASK_CLOSE_KERNEL = (3, 3)
+# Color segmentation morphology.
+# Keep closing small (or disable with (1,1)) to avoid fusing two nearby cars into one blob.
+COLOR_MASK_OPEN_KERNEL = (3, 3)
+COLOR_MASK_CLOSE_KERNEL = (1, 1)
 
 ENABLE_BLOB_SPLITTING = True
 BLOB_SPLIT_MAX_EROSIONS = 4
 BLOB_SPLIT_MIN_AREA = 8500
+
+# Blob splitting (watershed) tuning.
+# Higher DT ratio -> smaller sure-foreground peaks (often helps separate touching cars).
+BLOB_SPLIT_USE_WATERSHED = True
+BLOB_SPLIT_DT_THRESH_RATIO = 0.58
+BLOB_SPLIT_BG_DILATE_ITERS = 2
 
 # Accident detection
 STOPPED_TIME_THRESHOLD = 999999.0
@@ -183,9 +240,9 @@ ACCIDENT_DETECTION_DELAY_SECONDS = 0.0
 COLLISION_MIN_CONTACT_SECONDS = 0.0
 QUEUE_MIN_SECONDS = 0.5
 
-COLLISION_ALERT_HOLD_SECONDS = 10.0
-
-COLLISION_CLEAR_SECONDS = 5.0
+# Collision alerts should clear immediately when resolved.
+COLLISION_ALERT_HOLD_SECONDS = 0.0
+COLLISION_CLEAR_SECONDS = 0.0
 
 COLLISION_DUPLICATE_OVERLAP_MAX = 0.65
 
@@ -223,6 +280,11 @@ LP_ASPECT_RATIO_MAX = 8.0  # more flexible for various tape sizes
 
 # OCR Configuration
 TESSERACT_CONFIG = '--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+# License plate OCR throttling (EasyOCR can be expensive)
+LP_DETECT_EVERY_N_FRAMES = 10
+LP_MAX_VEHICLES_PER_FRAME = 1
+LP_PER_VEHICLE_COOLDOWN_SECONDS = 2.0
 
 # Emergency notification
 EMERGENCY_HOTLINE = "911"
@@ -265,6 +327,9 @@ SHOW_DEBUG_INFO = True
 SHOW_VEHICLE_IDS = True
 SHOW_LANE_REGIONS = True
 SHOW_VIOLATIONS = True
+
+# FPS display smoothing
+FPS_EMA_ALPHA = 0.15
 
 # Colors (BGR format for OpenCV)
 COLOR_LANE1 = (255, 0, 0)      # Blue

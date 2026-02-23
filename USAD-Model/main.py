@@ -6,6 +6,8 @@ import time
 import sys
 import os
 import importlib
+import threading
+from typing import Optional, Tuple
 import config
 from traffic_controller import TrafficController
 from vehicle_detector import VehicleDetector
@@ -14,6 +16,54 @@ from violation_detector import ViolationDetector
 from license_plate_detector import LicensePlateDetector
 from event_logger import EventLogger
 from emergency_notifier import EmergencyNotifier
+
+
+class LatestFrameGrabber:
+    """Continuously reads from a VideoCapture and exposes the latest frame.
+
+    This avoids UI stutter when processing occasionally spikes by decoupling
+    capture from the processing loop.
+    """
+
+    def __init__(self, cap: cv2.VideoCapture):
+        self._cap = cap
+        self._lock = threading.Lock()
+        self._stop = threading.Event()
+        self._thread: Optional[threading.Thread] = None
+
+        self._latest: Optional[np.ndarray] = None
+        self._latest_ts: float = 0.0
+
+    def start(self):
+        if self._thread is not None:
+            return
+        self._thread = threading.Thread(target=self._run, name="LatestFrameGrabber", daemon=True)
+        self._thread.start()
+
+    def stop(self):
+        self._stop.set()
+        t = self._thread
+        if t is not None:
+            t.join(timeout=1.0)
+
+    def _run(self):
+        while not self._stop.is_set():
+            if self._cap is None:
+                time.sleep(0.01)
+                continue
+            ret, frame = self._cap.read()
+            if not ret:
+                time.sleep(0.005)
+                continue
+            with self._lock:
+                self._latest = frame
+                self._latest_ts = time.time()
+
+    def get_latest(self) -> Tuple[bool, Optional[np.ndarray], float]:
+        with self._lock:
+            if self._latest is None:
+                return False, None, 0.0
+            return True, self._latest, float(self._latest_ts)
 
 
 class USAD:
@@ -48,9 +98,12 @@ class USAD:
         self.fps = 0
         self.frame_count = 0
         self.start_time = time.time()
+        self._last_loop_ts: Optional[float] = None
+        self._fps_ema: float = 0.0
         
         # Video capture
         self.cap = None
+        self._grabber: Optional[LatestFrameGrabber] = None
         
         # Display settings
         self.is_fullscreen = False
@@ -67,6 +120,10 @@ class USAD:
         self.config_last_modified = os.path.getmtime(self.config_path)
         self.config_check_interval = 1.0  # Check every 1 second
         self.last_config_check = time.time()
+
+        # License plate OCR throttling (keeps EasyOCR from stalling frames)
+        self._lp_last_attempt_ts = {}
+        self._lp_frame_index = 0
         
     def initialize_camera(self) -> bool:
         """Initialize camera or video source"""
@@ -190,13 +247,37 @@ class USAD:
         
         # License plate detection
         if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
-            for vehicle in vehicles:
-                if not vehicle.license_plate:
+            # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
+            self._lp_frame_index += 1
+            every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
+            max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
+            cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
+            if every_n <= 0:
+                every_n = 1
+            if max_per_frame < 0:
+                max_per_frame = 0
+
+            if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
+                now_ts = time.time()
+                attempts = 0
+                for vehicle in vehicles:
+                    if vehicle.license_plate:
+                        continue
+
+                    last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
+                    if cooldown > 0 and (now_ts - last_ts) < cooldown:
+                        continue
+
+                    self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
                     result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
                     if result:
                         plate_text, confidence, plate_bbox = result
                         vehicle.license_plate = plate_text
                         vehicle.license_plate_confidence = confidence
+
+                    attempts += 1
+                    if attempts >= max_per_frame:
+                        break
         
         # Intelligent traffic control
         self.update_traffic_control(lane_counts, accidents)
@@ -739,22 +820,40 @@ class USAD:
         
         try:
             while True:
-                ret, frame = self.cap.read()
-                
-                if not ret:
-                    print("[ERROR] Failed to read frame")
-                    break
+                # Start the grabber lazily (keeps capture responsive if processing spikes)
+                if self._grabber is None and self.cap is not None:
+                    self._grabber = LatestFrameGrabber(self.cap)
+                    self._grabber.start()
+
+                ret, frame, ts = (False, None, 0.0)
+                if self._grabber is not None:
+                    ret, frame, ts = self._grabber.get_latest()
+                if not ret or frame is None:
+                    # Avoid tight spin if the camera momentarily stalls.
+                    time.sleep(0.005)
+                    continue
+
+                # FPS stabilization (EMA of instantaneous loop rate)
+                now_loop = time.time()
+                if self._last_loop_ts is not None:
+                    dt = max(1e-6, now_loop - float(self._last_loop_ts))
+                    inst = 1.0 / dt
+                    alpha = float(getattr(config, "FPS_EMA_ALPHA", 0.15) or 0.15)
+                    if alpha > 0:
+                        alpha = max(0.01, min(0.5, alpha))
+                        if self._fps_ema <= 0:
+                            self._fps_ema = inst
+                        else:
+                            self._fps_ema = (1.0 - alpha) * self._fps_ema + alpha * inst
+                        self.fps = float(self._fps_ema)
+                self._last_loop_ts = now_loop
                 
                 processed_frame = self.process_frame(frame)
                 
                 self.check_config_reload()
                 
+                # Keep the existing counters for statistics.
                 self.frame_count += 1
-                elapsed = time.time() - self.start_time
-                if elapsed > 1.0:
-                    self.fps = self.frame_count / elapsed
-                    self.frame_count = 0
-                    self.start_time = time.time()
                 
                 cv2.imshow(config.DISPLAY_WINDOW_NAME, processed_frame)
                 
@@ -773,6 +872,10 @@ class USAD:
             print("\n[System] Shutting down...")
             
             self.print_statistics()
+
+            if self._grabber is not None:
+                self._grabber.stop()
+                self._grabber = None
             
             if self.cap:
                 self.cap.release()

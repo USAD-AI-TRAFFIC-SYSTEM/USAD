@@ -63,6 +63,16 @@ class ViolationDetector:
         # vehicle_id -> {"RED_LIGHT", "YELLOW_ABUSE", "ILLEGAL_TURN"} (prevents duplicates)
         self.checked_vehicles: Dict[int, set] = {}
         self.current_signals: Dict[str, str] = {lane: "GREEN" for lane in config.LANES.keys()}
+
+        # Cache intersection centroid for oriented stop-line distance tests.
+        try:
+            pts = np.array(getattr(config, "INTERSECTION_CENTER", []), dtype=np.float32)
+            if pts.size != 0:
+                self._intersection_centroid = (float(np.mean(pts[:, 0])), float(np.mean(pts[:, 1])))
+            else:
+                self._intersection_centroid = (0.0, 0.0)
+        except Exception:
+            self._intersection_centroid = (0.0, 0.0)
         
     def set_traffic_signal(self, lane: str, signal: str):
         """Update traffic signal state for a lane"""
@@ -118,7 +128,7 @@ class ViolationDetector:
         
         if not vehicle.crossed_stop_line:
             stop_line = config.LANES[lane_key]["stop_line"]
-            if self._crossed_line(vehicle, stop_line):
+            if self._crossed_stop_line(vehicle, stop_line):
                 vehicle.crossed_stop_line = True
                 
                 speed = vehicle.get_speed()
@@ -159,7 +169,7 @@ class ViolationDetector:
         
         # A vehicle far from the stop line should slow/stop; flag if it still crosses fast.
         if distance_to_line > config.YELLOW_SAFE_DISTANCE:
-            if self._crossed_line(vehicle, stop_line):
+            if self._crossed_stop_line(vehicle, stop_line):
                 violation = Violation(
                     "YELLOW_ABUSE",
                     vehicle,
@@ -232,20 +242,58 @@ class ViolationDetector:
         
         return None
     
-    def _crossed_line(self, vehicle: Vehicle, stop_line: List[Tuple[int, int]]) -> bool:
-        """Check if vehicle crossed stop line"""
+    def _signed_distance_to_stop_line(self, point: Tuple[float, float], stop_line: List[Tuple[int, int]]) -> float:
+        """Signed perpendicular distance to stop line in pixels.
+
+        Sign is oriented such that positive means "toward the intersection".
+        """
+        p = np.array(point, dtype=np.float32)
+        p1 = np.array(stop_line[0], dtype=np.float32)
+        p2 = np.array(stop_line[1], dtype=np.float32)
+        v = p2 - p1
+        denom = float(np.linalg.norm(v))
+        if denom <= 1e-6:
+            return 0.0
+
+        # 2D cross product magnitude gives signed area; divide by |v| for distance.
+        dist = float(np.cross(v, (p - p1)) / denom)
+
+        # Orient sign so the intersection centroid is on the positive side.
+        ic = np.array(self._intersection_centroid, dtype=np.float32)
+        dist_ic = float(np.cross(v, (ic - p1)) / denom)
+        if dist_ic < 0:
+            dist = -dist
+        return dist
+
+    def _crossed_stop_line(self, vehicle: Vehicle, stop_line: List[Tuple[int, int]]) -> bool:
+        """Check if vehicle crossed stop line.
+
+        Uses a "past the line" signed-distance threshold to avoid missing crossings
+        when FPS dips or when the vehicle center lands exactly on the line.
+        """
         if len(vehicle.positions) < 2:
             return False
-        
+
+        # Use the raw observed centers in history for crossing tests.
+        prev_pos = tuple(map(float, vehicle.positions[-2]))
+        curr_pos = tuple(map(float, vehicle.positions[-1]))
+
+        prev_d = self._signed_distance_to_stop_line(prev_pos, stop_line)
+        curr_d = self._signed_distance_to_stop_line(curr_pos, stop_line)
+
+        past_px = float(getattr(config, "RED_LIGHT_CROSSING_THRESHOLD", 0.0) or 0.0)
+        past_px = max(0.0, past_px)
+
+        # Primary: moved from not-past to past.
+        if prev_d < past_px and curr_d >= past_px:
+            return True
+
+        # Fallback: strict segment intersection (catches weird geometry cases).
         line_pt1 = np.array(stop_line[0], dtype=np.float32)
         line_pt2 = np.array(stop_line[1], dtype=np.float32)
-        
-        prev_pos = np.array(vehicle.positions[-2], dtype=np.float32)
-        curr_pos = np.array(vehicle.positions[-1], dtype=np.float32)
-        
-        crossed = self._line_intersects(prev_pos, curr_pos, line_pt1, line_pt2)
-        
-        return crossed
+        p1 = np.array(prev_pos, dtype=np.float32)
+        p2 = np.array(curr_pos, dtype=np.float32)
+        return bool(self._line_intersects(p1, p2, line_pt1, line_pt2))
     
     def _line_intersects(self, p1: np.ndarray, p2: np.ndarray, 
                         q1: np.ndarray, q2: np.ndarray) -> bool:

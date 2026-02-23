@@ -104,6 +104,9 @@ class AccidentDetector:
         # When a collision is no longer observed, remove it after a short clear delay.
         self._collision_resolved_since: Dict[Tuple[int, int], float] = {}
 
+        # For multi-vehicle collisions, track resolution by the full involved ID set.
+        self._collision_resolved_since_group: Dict[Tuple[int, ...], float] = {}
+
         # Time-based confirmation (wait 1–2s before classifying)
         self._vehicle_first_seen: Dict[int, float] = {}
         self._collision_contact_start: Dict[Tuple[int, int], float] = {}
@@ -176,12 +179,63 @@ class AccidentDetector:
         for v in vehicles:
             self._vehicle_first_seen.setdefault(int(v.id), now)
 
-        # Update/create tracked accidents based on evidence keys
-        seen_keys: set = set()
-        for evidence in frame_evidence:
-            key = self._accident_key(evidence.type, evidence.vehicles)
-            seen_keys.add(key)
+        def _dedupe_keys_for_accident(accident_id: int, keep_key: Tuple[str, Tuple[int, ...]]):
+            # Remove stale signature keys that point at the same accident.
+            for k, v in list(self._accident_key_to_id.items()):
+                if v == accident_id and k != keep_key:
+                    self._accident_key_to_id.pop(k, None)
 
+        # Update/create tracked accidents based on evidence.
+        # Use accident IDs for "seen this frame" to avoid resetting/aging when collision
+        # vehicle sets fluctuate (e.g., 2 -> 3 vehicles) while it is still the same event.
+        seen_accident_ids: set[int] = set()
+
+        for evidence in frame_evidence:
+            # COLLISION: attempt to match to an existing collision accident by overlap,
+            # so duration/ID remains stable even when the involved vehicle set changes.
+            if evidence.type == "COLLISION":
+                evidence_ids = {int(v.id) for v in evidence.vehicles}
+
+                best_id: Optional[int] = None
+                best_inter = 0
+                best_dist = 1e9
+                max_match_dist = float(getattr(config, "COLLISION_MATCH_MAX_DISTANCE_PX", 90.0) or 90.0)
+
+                ex, ey = map(float, evidence.location)
+                for accident_id, accident in self.accidents.items():
+                    if accident.type != "COLLISION":
+                        continue
+                    acc_ids = {int(v.id) for v in accident.vehicles}
+                    inter = len(evidence_ids.intersection(acc_ids))
+                    if inter <= 0:
+                        continue
+                    ax, ay = map(float, accident.location)
+                    dist = float(np.hypot(ax - ex, ay - ey))
+                    if dist > max_match_dist:
+                        continue
+
+                    # Prefer higher overlap, then closer distance.
+                    if inter > best_inter or (inter == best_inter and dist < best_dist):
+                        best_id = int(accident_id)
+                        best_inter = int(inter)
+                        best_dist = float(dist)
+
+                if best_id is not None and best_id in self.accidents:
+                    acc = self.accidents[best_id]
+                    acc_ids = {int(v.id) for v in acc.vehicles}
+                    union_ids = sorted(acc_ids.union(evidence_ids))
+                    acc.vehicles = [vehicles_by_id[vid] for vid in union_ids if vid in vehicles_by_id]
+                    acc.location = evidence.location
+                    acc.update(seen=True)
+                    seen_accident_ids.add(best_id)
+
+                    key = self._accident_key(acc.type, acc.vehicles)
+                    self._accident_key_to_id[key] = best_id
+                    _dedupe_keys_for_accident(best_id, key)
+                    continue
+
+            # Default: match by exact signature key
+            key = self._accident_key(evidence.type, evidence.vehicles)
             existing_id = self._accident_key_to_id.get(key)
             if existing_id is not None and existing_id in self.accidents:
                 acc = self.accidents[existing_id]
@@ -189,6 +243,8 @@ class AccidentDetector:
                 acc.location = evidence.location
                 acc.vehicles = evidence.vehicles
                 acc.update(seen=True)
+                seen_accident_ids.add(int(existing_id))
+                _dedupe_keys_for_accident(int(existing_id), key)
             else:
                 # Start a new tracked accident candidate
                 evidence.last_seen_time = now
@@ -196,11 +252,15 @@ class AccidentDetector:
 
                 # If the configured confirmation threshold is 1 (common for collisions),
                 # confirm immediately so the UI can alert on the same frame.
-                if (not evidence.confirmed) and (evidence.confidence_frames >= int(getattr(evidence, "_confirm_frames_required", 1))):
+                if (not evidence.confirmed) and (
+                    evidence.confidence_frames >= int(getattr(evidence, "_confirm_frames_required", 1))
+                ):
                     evidence.confirmed = True
                     evidence.confirmed_time = now
                 self.accidents[evidence.id] = evidence
                 self._accident_key_to_id[key] = evidence.id
+                seen_accident_ids.add(int(evidence.id))
+                _dedupe_keys_for_accident(int(evidence.id), key)
 
         # Age out accidents that are not seen this frame
         remove_if_missed = int(getattr(config, "ACCIDENT_REMOVE_AFTER_MISSED_FRAMES", 10))
@@ -209,48 +269,54 @@ class AccidentDetector:
 
         to_remove: List[int] = []
         for accident_id, accident in self.accidents.items():
-            key = self._accident_key(accident.type, accident.vehicles)
-            if key in seen_keys:
+            if int(accident_id) in seen_accident_ids:
                 # Reset "resolved" timers when collision evidence is present again.
                 if accident.type == "COLLISION" and len(accident.vehicles) >= 2:
-                    pair = (min(int(accident.vehicles[0].id), int(accident.vehicles[1].id)),
-                            max(int(accident.vehicles[0].id), int(accident.vehicles[1].id)))
-                    self._collision_resolved_since.pop(pair, None)
+                    ids = tuple(sorted(int(v.id) for v in accident.vehicles))
+                    if len(ids) == 2:
+                        self._collision_resolved_since.pop((ids[0], ids[1]), None)
+                    self._collision_resolved_since_group.pop(ids, None)
                 continue
 
             # If collision cars separate or disappear, remove the collision alert after a short delay.
             if accident.type == "COLLISION" and len(accident.vehicles) >= 2:
-                v1_id = int(accident.vehicles[0].id)
-                v2_id = int(accident.vehicles[1].id)
-                pair = (min(v1_id, v2_id), max(v1_id, v2_id))
+                ids = tuple(sorted(int(v.id) for v in accident.vehicles))
 
-                v1 = vehicles_by_id.get(v1_id)
-                v2 = vehicles_by_id.get(v2_id)
                 resolved = False
+                live = []
+                for vid in ids:
+                    v = vehicles_by_id.get(int(vid))
+                    if v is None:
+                        resolved = True
+                        break
+                    live.append(v)
 
-                # If one/both vehicles are no longer detected, consider collision resolved.
-                if v1 is None or v2 is None:
-                    resolved = True
-                else:
-                    gap_now = _bbox_gap_distance_px(v1.bbox, v2.bbox)
-                    if gap_now > clear_gap_px:
+                if not resolved:
+                    # Consider resolved if ALL vehicles have separated beyond the clear gap.
+                    min_gap = None
+                    for i in range(len(live)):
+                        for j in range(i + 1, len(live)):
+                            g = _bbox_gap_distance_px(live[i].bbox, live[j].bbox)
+                            min_gap = g if min_gap is None else min(min_gap, g)
+                    if min_gap is not None and float(min_gap) > float(clear_gap_px):
                         resolved = True
 
                 if resolved:
-                    start = float(self._collision_resolved_since.get(pair, 0.0) or 0.0)
+                    start = float(self._collision_resolved_since_group.get(ids, 0.0) or 0.0)
                     if start <= 0.0:
-                        self._collision_resolved_since[pair] = now
+                        self._collision_resolved_since_group[ids] = now
                     elif (now - start) >= max(0.0, collision_clear_seconds):
                         to_remove.append(accident_id)
                         continue
                 else:
-                    self._collision_resolved_since.pop(pair, None)
+                    self._collision_resolved_since_group.pop(ids, None)
 
             # Hold confirmed collision alerts on-screen briefly even if evidence disappears.
-            if (
+            hold_seconds = float(getattr(config, "COLLISION_ALERT_HOLD_SECONDS", 3.0) or 0.0)
+            if hold_seconds > 0 and (
                 accident.type == "COLLISION"
                 and accident.confirmed
-                and (now - float(accident.last_seen_time)) < float(getattr(config, "COLLISION_ALERT_HOLD_SECONDS", 3.0))
+                and (now - float(accident.last_seen_time)) < hold_seconds
                 and all(int(v.id) in current_vehicle_ids for v in accident.vehicles)
             ):
                 continue
@@ -283,15 +349,36 @@ class AccidentDetector:
             for v in accident.vehicles:
                 self.checked_vehicles.add(v.id)
 
+        # Stability hint for tracking: when a collision is active, segmentation/masks can
+        # jitter a lot (touching cars, merged blobs). Mark involved vehicles so bbox
+        # stabilization can be boosted on subsequent frames.
+        stability_seconds = float(getattr(config, "COLLISION_BBOX_STABILIZE_SECONDS", 1.75) or 0.0)
+        if stability_seconds > 0:
+            until = now + stability_seconds
+            for accident in self.accidents.values():
+                if not (accident.confirmed and accident.type == "COLLISION"):
+                    continue
+                for v in accident.vehicles:
+                    vid = int(getattr(v, "id", 0) or 0)
+                    if vid <= 0:
+                        continue
+                    vv = vehicles_by_id.get(vid)
+                    if vv is None:
+                        continue
+                    try:
+                        setattr(vv, "_collision_stability_until", float(until))
+                    except Exception:
+                        pass
+
         # Remove accidents flagged for removal and clean up key map
         if to_remove:
-            reverse_key = {v: k for k, v in self._accident_key_to_id.items()}
             for accident_id in to_remove:
                 acc = self.accidents.get(accident_id)
                 if acc is None:
                     continue
-                key = reverse_key.get(accident_id) or self._accident_key(acc.type, acc.vehicles)
-                self._accident_key_to_id.pop(key, None)
+                for k, v in list(self._accident_key_to_id.items()):
+                    if v == accident_id:
+                        self._accident_key_to_id.pop(k, None)
                 del self.accidents[accident_id]
         
         return list(self.accidents.values())
@@ -575,13 +662,15 @@ class AccidentDetector:
         require_motion = bool(getattr(config, "REQUIRE_MOTION_FOR_COLLISION", True))
         min_motion_speed = float(getattr(config, "COLLISION_MIN_SPEED_PX_PER_SEC", 8.0))
         
+        # Collect collision edges (vehicle id pairs) then group into connected components.
+        collision_edges: List[Tuple[int, int]] = []
+
         for i, vehicle1 in enumerate(vehicles):
-            if vehicle1.id in self.checked_vehicles:
-                continue
+            # NOTE: do not suppress vehicles already in confirmed accidents here.
+            # Collisions can expand (2 cars -> 3 cars) and we want the group to update.
             
             for vehicle2 in vehicles[i+1:]:
-                if vehicle2.id in self.checked_vehicles:
-                    continue
+                
                 
                 # Distance between vehicle bodies (bounding boxes)
                 gap_px = bbox_gap_distance_px(vehicle1.bbox, vehicle2.bbox)
@@ -739,8 +828,42 @@ class AccidentDetector:
                     # Clear queue timer on collision
                     self._queue_close_start.pop(pair_key, None)
 
-                    accident = Accident("COLLISION", [vehicle1, vehicle2], collision_point)
-                    accidents.append(accident)
+                    collision_edges.append((int(vehicle1.id), int(vehicle2.id)))
+
+        if not collision_edges:
+            return accidents
+
+        # Group collisions so 3+ vehicle pileups are represented as one accident.
+        vehicles_by_id = {int(v.id): v for v in vehicles}
+        adj: Dict[int, set] = {}
+        for a, b in collision_edges:
+            adj.setdefault(a, set()).add(b)
+            adj.setdefault(b, set()).add(a)
+
+        seen = set()
+        for vid in adj.keys():
+            if vid in seen:
+                continue
+            stack = [vid]
+            comp = set()
+            while stack:
+                cur = stack.pop()
+                if cur in seen:
+                    continue
+                seen.add(cur)
+                comp.add(cur)
+                for nxt in adj.get(cur, set()):
+                    if nxt not in seen:
+                        stack.append(nxt)
+
+            if len(comp) < 2:
+                continue
+            involved = [vehicles_by_id[c] for c in sorted(comp) if c in vehicles_by_id]
+            if len(involved) < 2:
+                continue
+            cx = int(round(float(sum(v.center[0] for v in involved)) / float(len(involved))))
+            cy = int(round(float(sum(v.center[1] for v in involved)) / float(len(involved))))
+            accidents.append(Accident("COLLISION", involved, (cx, cy)))
         
         return accidents
     
@@ -774,7 +897,16 @@ class AccidentDetector:
             overlay = frame.copy()
             banner_h = 110
             cv2.rectangle(overlay, (0, 0), (width, banner_h), (0, 0, 255), -1)
-            frame = cv2.addWeighted(overlay, 0.85, frame, 0.15, 0)
+            # Subtle pulse to make the alert feel "alive" without changing accident timing.
+            pulse_speed = float(getattr(config, "COLLISION_BANNER_PULSE_HZ", 1.2) or 1.2)
+            pulse_speed = max(0.0, pulse_speed)
+            if pulse_speed > 0:
+                a = 0.80 + 0.15 * (0.5 + 0.5 * float(np.sin(now * (2.0 * np.pi * pulse_speed))))
+                a = float(max(0.65, min(0.95, a)))
+            else:
+                a = 0.85
+            frame = cv2.addWeighted(overlay, a, frame, 1.0 - a, 0)
+            cv2.rectangle(frame, (0, 0), (width - 1, banner_h - 1), (255, 255, 255), 2)
 
             latest = max(confirmed_collisions, key=lambda a: a.detected_time)
             ids = ", ".join(str(v.id) for v in latest.vehicles)
@@ -832,3 +964,6 @@ class AccidentDetector:
         self.accidents.clear()
         self.checked_vehicles.clear()
         Accident._next_id = 1
+        self._accident_key_to_id.clear()
+        self._collision_resolved_since.clear()
+        self._collision_resolved_since_group.clear()
