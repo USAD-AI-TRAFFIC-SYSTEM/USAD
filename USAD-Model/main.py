@@ -215,10 +215,11 @@ class USAD:
             self._no_car_idle_mode = False
         
         # Get vehicle counts by lane
-        lane_counts = self.vehicle_detector.get_vehicle_count_by_lane()
+        lane_counts = self.vehicle_detector.get_vehicle_count_by_lane(include_intersection=True)
+        lane_counts_for_control = {k: int(lane_counts.get(k, 0)) for k in config.LANES.keys()}
 
         # Update traffic signal cycle (software simulation when Arduino is disconnected)
-        self.update_signal_cycle(lane_counts)
+        self.update_signal_cycle(lane_counts_for_control)
         
         # Detect accidents (skip when in idle mode)
         if self._no_car_idle_mode:
@@ -280,7 +281,7 @@ class USAD:
                         break
         
         # Intelligent traffic control
-        self.update_traffic_control(lane_counts, accidents)
+        self.update_traffic_control(lane_counts_for_control, accidents)
         
         # Draw everything on frame
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
@@ -592,6 +593,12 @@ class USAD:
             count = int(lane_counts.get(lane_key, 0))
             state = self._classify_lane_congestion(count)
             lane_states.append(f"{lane_key}:{state}")
+
+        # Intersection/center zone status (display-only; not part of signal control).
+        if "INTERSECTION" in lane_counts:
+            inter_count = int(lane_counts.get("INTERSECTION", 0))
+            inter_state = self._classify_lane_congestion(inter_count)
+            lane_states.append(f"INTERSECTION:{inter_state}")
         cv2.putText(
             frame,
             "Lane status: " + " | ".join(lane_states),

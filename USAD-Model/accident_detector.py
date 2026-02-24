@@ -39,16 +39,21 @@ class Accident:
         
     def _determine_lane(self) -> Optional[str]:
         """Determine which lane the accident is in"""
+        # Intersection should take precedence: when an accident occurs in the
+        # middle zone, record it under the intersection/center status.
+        try:
+            intersection_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
+            result = cv2.pointPolygonTest(intersection_region, self.location, False)
+            if result >= 0:
+                return "INTERSECTION"
+        except Exception:
+            pass
+
         for lane_key, lane_data in config.LANES.items():
             lane_region = np.array(lane_data["region"], dtype=np.int32)
             result = cv2.pointPolygonTest(lane_region, self.location, False)
             if result >= 0:
                 return lane_key
-        
-        intersection_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
-        result = cv2.pointPolygonTest(intersection_region, self.location, False)
-        if result >= 0:
-            return "INTERSECTION"
         
         return None
     
@@ -171,6 +176,8 @@ class AccidentDetector:
             return legacy
 
         collision_clear_seconds = float(getattr(config, "COLLISION_CLEAR_SECONDS", 5.0))
+        missing_grace_seconds = float(getattr(config, "COLLISION_MISSING_VEHICLE_GRACE_SECONDS", 2.0) or 2.0)
+        missing_grace_seconds = max(0.0, min(10.0, missing_grace_seconds))
         threshold_px = _collision_threshold_px()
         queue_proximity_px = float(getattr(config, "QUEUE_PROXIMITY_PX", 45.0))
         clear_gap_px = max(threshold_px, queue_proximity_px) + 15.0
@@ -199,7 +206,13 @@ class AccidentDetector:
                 best_id: Optional[int] = None
                 best_inter = 0
                 best_dist = 1e9
+                best_recent = 1e9
                 max_match_dist = float(getattr(config, "COLLISION_MATCH_MAX_DISTANCE_PX", 90.0) or 90.0)
+                # If tracking IDs churn during a real collision, vehicle-id intersection can be 0.
+                # Allow a proximity match to a very recent collision accident to keep a stable
+                # accident ID (prevents duplicate notifications) WITHOUT changing collision rules.
+                max_match_age = float(getattr(config, "COLLISION_MATCH_MAX_AGE_SECONDS", 4.0) or 4.0)
+                max_match_age = max(0.0, min(10.0, max_match_age))
 
                 ex, ey = map(float, evidence.location)
                 for accident_id, accident in self.accidents.items():
@@ -207,7 +220,8 @@ class AccidentDetector:
                         continue
                     acc_ids = {int(v.id) for v in accident.vehicles}
                     inter = len(evidence_ids.intersection(acc_ids))
-                    if inter <= 0:
+                    recent = float(now - float(getattr(accident, "last_seen_time", 0.0) or 0.0))
+                    if inter <= 0 and (max_match_age <= 0 or recent > max_match_age):
                         continue
                     ax, ay = map(float, accident.location)
                     dist = float(np.hypot(ax - ex, ay - ey))
@@ -215,16 +229,43 @@ class AccidentDetector:
                         continue
 
                     # Prefer higher overlap, then closer distance.
-                    if inter > best_inter or (inter == best_inter and dist < best_dist):
+                    if (
+                        inter > best_inter
+                        or (inter == best_inter and dist < best_dist)
+                        or (inter == best_inter and abs(dist - best_dist) < 1e-6 and recent < best_recent)
+                    ):
                         best_id = int(accident_id)
                         best_inter = int(inter)
                         best_dist = float(dist)
+                        best_recent = float(recent)
 
                 if best_id is not None and best_id in self.accidents:
                     acc = self.accidents[best_id]
-                    acc_ids = {int(v.id) for v in acc.vehicles}
-                    union_ids = sorted(acc_ids.union(evidence_ids))
-                    acc.vehicles = [vehicles_by_id[vid] for vid in union_ids if vid in vehicles_by_id]
+                    if best_inter <= 0:
+                        # Fallback match (ID churn): replace the involved set with the
+                        # current evidence set to avoid unbounded union growth.
+                        acc.vehicles = list(evidence.vehicles)
+                    else:
+                        acc_ids = {int(v.id) for v in acc.vehicles}
+                        union_ids = sorted(acc_ids.union(evidence_ids))
+                        # Preserve vehicle identity across brief detection dropouts:
+                        # if a vehicle isn't present in the current `vehicles` list (because
+                        # it wasn't detected this frame), keep the prior Vehicle object so
+                        # collision matching/notification does not churn.
+                        updated: List[Vehicle] = []
+                        for vid in union_ids:
+                            vcur = vehicles_by_id.get(int(vid))
+                            if vcur is not None:
+                                updated.append(vcur)
+                                continue
+                            for vold in acc.vehicles:
+                                try:
+                                    if int(getattr(vold, "id", 0) or 0) == int(vid):
+                                        updated.append(vold)
+                                        break
+                                except Exception:
+                                    continue
+                        acc.vehicles = updated
                     acc.location = evidence.location
                     acc.update(seen=True)
                     seen_accident_ids.add(best_id)
@@ -262,6 +303,169 @@ class AccidentDetector:
                 seen_accident_ids.add(int(evidence.id))
                 _dedupe_keys_for_accident(int(evidence.id), key)
 
+        # Consolidate collision accidents so multi-vehicle pileups are represented
+        # as a single collision event.
+        #
+        # Goals:
+        # - Never have two active COLLISION accidents that share the same vehicle.
+        # - When contact edges flicker, merge nearby/recent collision groups so a
+        #   3+ vehicle pileup doesn't split into multiple accidents.
+        def _merge_collision_accidents(keep_id: int, drop_id: int):
+            if keep_id == drop_id:
+                return
+            keep = self.accidents.get(keep_id)
+            drop = self.accidents.get(drop_id)
+            if keep is None or drop is None:
+                return
+            if keep.type != "COLLISION" or drop.type != "COLLISION":
+                return
+
+            keep_ids = {int(getattr(v, "id", 0) or 0) for v in keep.vehicles}
+            drop_ids = {int(getattr(v, "id", 0) or 0) for v in drop.vehicles}
+            union_ids = sorted({vid for vid in (keep_ids.union(drop_ids)) if vid > 0})
+            merged_vehicles: List[Vehicle] = []
+            for vid in union_ids:
+                vcur = vehicles_by_id.get(int(vid))
+                if vcur is not None:
+                    merged_vehicles.append(vcur)
+                    continue
+                # Prefer to retain an existing Vehicle object when missing from current frame.
+                found = None
+                for src in (keep.vehicles, drop.vehicles):
+                    for v in src:
+                        try:
+                            if int(getattr(v, "id", 0) or 0) == int(vid):
+                                found = v
+                                break
+                        except Exception:
+                            continue
+                    if found is not None:
+                        break
+                if found is not None:
+                    merged_vehicles.append(found)
+            keep.vehicles = merged_vehicles
+
+            # Merge/refresh metadata.
+            try:
+                kx, ky = map(float, keep.location)
+                dx, dy = map(float, drop.location)
+                keep.location = (int(round((kx + dx) / 2.0)), int(round((ky + dy) / 2.0)))
+            except Exception:
+                pass
+            keep.last_seen_time = max(float(getattr(keep, "last_seen_time", 0.0) or 0.0), float(getattr(drop, "last_seen_time", 0.0) or 0.0))
+            keep.detected_time = min(float(getattr(keep, "detected_time", now) or now), float(getattr(drop, "detected_time", now) or now))
+            keep.confidence_frames = max(int(getattr(keep, "confidence_frames", 0) or 0), int(getattr(drop, "confidence_frames", 0) or 0))
+            keep.missed_frames = min(int(getattr(keep, "missed_frames", 0) or 0), int(getattr(drop, "missed_frames", 0) or 0))
+            keep.notified = bool(getattr(keep, "notified", False) or getattr(drop, "notified", False))
+            if bool(getattr(drop, "confirmed", False)):
+                keep.confirmed = True
+                t_keep = float(getattr(keep, "confirmed_time", 0.0) or 0.0)
+                t_drop = float(getattr(drop, "confirmed_time", 0.0) or 0.0)
+                if t_keep <= 0.0:
+                    keep.confirmed_time = t_drop if t_drop > 0.0 else keep.last_seen_time
+                elif t_drop > 0.0:
+                    keep.confirmed_time = min(t_keep, t_drop)
+
+            # Remove key mappings that point to the dropped accident.
+            for k, v in list(self._accident_key_to_id.items()):
+                if int(v) == int(drop_id):
+                    self._accident_key_to_id.pop(k, None)
+
+            # Remove the dropped accident.
+            self.accidents.pop(drop_id, None)
+            seen_accident_ids.discard(int(drop_id))
+
+        # Pass 1: merge any collisions that share vehicles.
+        collision_ids = [int(aid) for aid, a in self.accidents.items() if getattr(a, "type", None) == "COLLISION"]
+        owner_by_vehicle: Dict[int, int] = {}
+        for aid in sorted(collision_ids):
+            acc = self.accidents.get(aid)
+            if acc is None:
+                continue
+            vids = [int(getattr(v, "id", 0) or 0) for v in getattr(acc, "vehicles", [])]
+            for vid in vids:
+                if vid <= 0:
+                    continue
+                owner = owner_by_vehicle.get(vid)
+                if owner is None or owner == aid:
+                    owner_by_vehicle[vid] = aid
+                    continue
+                # Merge into the earlier/older accident id (stable).
+                keep_id = int(min(owner, aid))
+                drop_id = int(max(owner, aid))
+                _merge_collision_accidents(keep_id, drop_id)
+                # Ensure ownership maps to the keeper.
+                owner_by_vehicle[vid] = keep_id
+
+        # Pass 2: merge nearby + recent collision groups (handles edge flicker in 3+ pileups).
+        merge_dist = float(getattr(config, "COLLISION_MATCH_MAX_DISTANCE_PX", 90.0) or 90.0)
+        merge_age = float(getattr(config, "COLLISION_MATCH_MAX_AGE_SECONDS", 4.0) or 4.0)
+        merge_dist = max(10.0, min(300.0, merge_dist))
+        merge_age = max(0.0, min(10.0, merge_age))
+
+        changed = True
+        while changed:
+            changed = False
+            collisions = [
+                (int(aid), self.accidents.get(int(aid)))
+                for aid in list(self.accidents.keys())
+                if self.accidents.get(int(aid)) is not None and self.accidents.get(int(aid)).type == "COLLISION"
+            ]
+            collisions = [(aid, acc) for aid, acc in collisions if acc is not None]
+            collisions.sort(key=lambda t: float(getattr(t[1], "detected_time", now) or now))
+            for i in range(len(collisions)):
+                a_id, a = collisions[i]
+                if a_id not in self.accidents:
+                    continue
+                a_recent = float(now - float(getattr(a, "last_seen_time", 0.0) or 0.0))
+                if merge_age > 0 and a_recent > merge_age:
+                    continue
+                ax, ay = map(float, getattr(a, "location", (0, 0)))
+                a_vids = {int(getattr(v, "id", 0) or 0) for v in getattr(a, "vehicles", [])}
+                for j in range(i + 1, len(collisions)):
+                    b_id, b = collisions[j]
+                    if b_id not in self.accidents:
+                        continue
+                    b_recent = float(now - float(getattr(b, "last_seen_time", 0.0) or 0.0))
+                    if merge_age > 0 and b_recent > merge_age:
+                        continue
+                    bx, by = map(float, getattr(b, "location", (0, 0)))
+                    dist = float(np.hypot(ax - bx, ay - by))
+                    if dist > merge_dist:
+                        continue
+
+                    b_vids = {int(getattr(v, "id", 0) or 0) for v in getattr(b, "vehicles", [])}
+                    a_lane = getattr(a, "lane", None)
+                    b_lane = getattr(b, "lane", None)
+
+                    def _lane_compatible(l1, l2):
+                        if not l1 or not l2:
+                            return True
+                        if l1 == l2:
+                            return True
+                        if l1 == "INTERSECTION" or l2 == "INTERSECTION":
+                            return True
+                        return False
+
+                    # Merge if overlapping vehicles (should already be handled) OR very close in space/time
+                    # and lane-compatible (avoid merging unrelated collisions from different lanes).
+                    if a_vids.intersection(b_vids) or (dist <= (merge_dist * 0.75) and _lane_compatible(a_lane, b_lane)):
+                        keep_id = int(min(a_id, b_id))
+                        drop_id = int(max(a_id, b_id))
+                        _merge_collision_accidents(keep_id, drop_id)
+                        changed = True
+                        break
+                if changed:
+                    break
+
+        # Refresh the signature map for collisions after consolidation.
+        for aid, acc in list(self.accidents.items()):
+            if acc.type != "COLLISION":
+                continue
+            key = self._accident_key(acc.type, acc.vehicles)
+            self._accident_key_to_id[key] = int(aid)
+            _dedupe_keys_for_accident(int(aid), key)
+
         # Age out accidents that are not seen this frame
         remove_if_missed = int(getattr(config, "ACCIDENT_REMOVE_AFTER_MISSED_FRAMES", 10))
         remove_if_missed_confirmed = int(getattr(config, "CONFIRMED_ACCIDENT_REMOVE_AFTER_MISSED_FRAMES", 30))
@@ -283,11 +487,13 @@ class AccidentDetector:
                 ids = tuple(sorted(int(v.id) for v in accident.vehicles))
 
                 resolved = False
+                resolved_due_to_missing = False
                 live = []
                 for vid in ids:
                     v = vehicles_by_id.get(int(vid))
                     if v is None:
                         resolved = True
+                        resolved_due_to_missing = True
                         break
                     live.append(v)
 
@@ -305,9 +511,13 @@ class AccidentDetector:
                     start = float(self._collision_resolved_since_group.get(ids, 0.0) or 0.0)
                     if start <= 0.0:
                         self._collision_resolved_since_group[ids] = now
-                    elif (now - start) >= max(0.0, collision_clear_seconds):
-                        to_remove.append(accident_id)
-                        continue
+                    else:
+                        clear_seconds_eff = float(collision_clear_seconds)
+                        if resolved_due_to_missing:
+                            clear_seconds_eff = max(clear_seconds_eff, float(missing_grace_seconds))
+                        if (now - start) >= max(0.0, clear_seconds_eff):
+                            to_remove.append(accident_id)
+                            continue
                 else:
                     self._collision_resolved_since_group.pop(ids, None)
 
