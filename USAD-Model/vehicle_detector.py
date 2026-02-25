@@ -63,12 +63,19 @@ class Vehicle:
         self.confirmed = False
         
         self.current_lane = None
+        # Display/analytics zone: either a lane key, "INTERSECTION", or None.
+        # Kept separate from current_lane so violation logic (signals/stop lines)
+        # never accidentally treats the intersection as a signal-controlled lane.
+        self.current_zone = None
+        self._zone_history: deque = deque(maxlen=7)
+        self._zone_none_frames = 0
         self.crossed_stop_line = False
         
         self.vehicle_type = self._classify_vehicle(area)
         
         self.license_plate = None
         self.license_plate_confidence = 0.0
+        self.license_plate_bbox = None
         
         self.is_stopped = False
         self.stopped_time = 0
@@ -742,6 +749,247 @@ class VehicleDetector:
         self._intersection_roi_mask: Optional[np.ndarray] = None
         self._intersection_roi_shape: Optional[Tuple[int, int]] = None
 
+        # Display-only smoothing cache (does not affect tracking logic).
+        self._display_bbox_ema: Dict[int, np.ndarray] = {}
+        self._display_center_ema: Dict[int, np.ndarray] = {}
+
+        # Cached zone (lane/intersection) masks for majority-of-bbox assignment.
+        # Stored as integral images for O(1) bbox-area queries.
+        self._zone_integrals_shape: Optional[Tuple[int, int]] = None  # (h, w)
+        self._zone_integrals: Dict[str, np.ndarray] = {}  # zone_key -> integral image
+
+        # Stable dashboard presence buffer (prevents 1↔0 flicker on single-frame misses).
+        # vehicle_id -> {"zone": Optional[str], "ttl": int}
+        self._dash_presence: Dict[int, dict] = {}
+
+    @staticmethod
+    def _polygon_shrink_towards_centroid(poly: np.ndarray, padding_px: int) -> np.ndarray:
+        """Shrink a polygon inward by moving vertices toward its centroid."""
+        try:
+            padding_px = int(padding_px or 0)
+        except Exception:
+            padding_px = 0
+        if padding_px <= 0:
+            return poly
+        if poly is None or getattr(poly, "size", 0) == 0:
+            return poly
+
+        try:
+            cx = float(np.mean(poly[:, 0]))
+            cy = float(np.mean(poly[:, 1]))
+        except Exception:
+            return poly
+
+        out = []
+        for p in poly:
+            try:
+                px = float(p[0])
+                py = float(p[1])
+            except Exception:
+                continue
+            dx = px - cx
+            dy = py - cy
+            dist = float(np.hypot(dx, dy))
+            if dist <= 1e-6:
+                out.append([int(round(px)), int(round(py))])
+                continue
+            scale = max(0.0, (dist - float(padding_px))) / dist
+            out.append([int(round(cx + dx * scale)), int(round(cy + dy * scale))])
+
+        if not out:
+            return poly
+        return np.array(out, dtype=np.int32)
+
+    def _ensure_zone_integrals(self, shape: Tuple[int, int]):
+        """Build integral images for each lane + intersection zone for fast overlap queries."""
+        try:
+            h, w = int(shape[0]), int(shape[1])
+        except Exception:
+            return
+        if h <= 0 or w <= 0:
+            return
+
+        if self._zone_integrals_shape == (h, w) and self._zone_integrals:
+            return
+
+        zone_integrals: Dict[str, np.ndarray] = {}
+
+        lane_padding = int(getattr(config, "LANE_PADDING", 0) or 0)
+
+        for lane_key, lane_data in getattr(config, "LANES", {}).items():
+            try:
+                poly = np.array(lane_data.get("region", []), dtype=np.int32)
+            except Exception:
+                poly = np.zeros((0, 2), dtype=np.int32)
+
+            if lane_padding > 0 and poly.size != 0:
+                poly = self._polygon_shrink_towards_centroid(poly, lane_padding)
+
+            mask = np.zeros((h, w), dtype=np.uint8)
+            if poly.size != 0:
+                cv2.fillPoly(mask, [poly], 1)
+            zone_integrals[str(lane_key)] = cv2.integral(mask)
+
+        if hasattr(config, "INTERSECTION_CENTER"):
+            try:
+                poly = np.array(getattr(config, "INTERSECTION_CENTER", []), dtype=np.int32)
+            except Exception:
+                poly = np.zeros((0, 2), dtype=np.int32)
+            mask = np.zeros((h, w), dtype=np.uint8)
+            if poly.size != 0:
+                cv2.fillPoly(mask, [poly], 1)
+            zone_integrals["INTERSECTION"] = cv2.integral(mask)
+
+        self._zone_integrals_shape = (h, w)
+        self._zone_integrals = zone_integrals
+
+    @staticmethod
+    def _integral_sum(integ: np.ndarray, x0: int, y0: int, x1: int, y1: int) -> int:
+        """Sum of pixels in [x0,x1)×[y0,y1) using OpenCV integral image."""
+        try:
+            return int(integ[y1, x1] - integ[y0, x1] - integ[y1, x0] + integ[y0, x0])
+        except Exception:
+            return 0
+
+    def _compute_majority_zone(self, bbox: Tuple[int, int, int, int], shape: Tuple[int, int]) -> Optional[str]:
+        """Return the single zone whose mask covers the largest area of the bbox."""
+        self._ensure_zone_integrals(shape)
+        if not self._zone_integrals:
+            return None
+
+        h, w_img = int(shape[0]), int(shape[1])
+        try:
+            x, y, bw, bh = bbox
+            x = int(round(float(x)))
+            y = int(round(float(y)))
+            bw = int(round(float(bw)))
+            bh = int(round(float(bh)))
+        except Exception:
+            return None
+        if bw <= 0 or bh <= 0:
+            return None
+
+        x0 = int(max(0, min(w_img, x)))
+        y0 = int(max(0, min(h, y)))
+        x1 = int(max(0, min(w_img, x + bw)))
+        y1 = int(max(0, min(h, y + bh)))
+        if x1 <= x0 or y1 <= y0:
+            return None
+
+        bbox_area = int((x1 - x0) * (y1 - y0))
+        if bbox_area <= 0:
+            return None
+
+        min_ratio = float(getattr(config, "ZONE_ASSIGN_MIN_BBOX_COVERAGE_RATIO", 0.05) or 0.05)
+        min_ratio = max(0.0, min(0.5, min_ratio))
+        min_pixels = int(getattr(config, "ZONE_ASSIGN_MIN_PIXELS", 20) or 20)
+        min_pixels = max(0, min(5000, min_pixels))
+
+        best_zone = None
+        best_pix = 0
+        second_pix = 0
+
+        for zone_key, integ in self._zone_integrals.items():
+            pix = self._integral_sum(integ, x0, y0, x1, y1)
+            if pix > best_pix:
+                second_pix = best_pix
+                best_pix = pix
+                best_zone = zone_key
+            elif pix > second_pix:
+                second_pix = pix
+
+        if best_zone is None or best_pix <= 0:
+            return None
+        if min_pixels > 0 and best_pix < min_pixels:
+            return None
+        if (best_pix / float(bbox_area)) < min_ratio:
+            return None
+
+        # If we're near a tie (boundary jitter), prefer keeping the previous zone.
+        tie_ratio = float(getattr(config, "ZONE_ASSIGN_TIE_KEEP_PREV_RATIO", 0.10) or 0.10)
+        tie_ratio = max(0.0, min(0.5, tie_ratio))
+        if second_pix > 0 and best_pix > 0 and ((best_pix - second_pix) / float(best_pix)) <= tie_ratio:
+            return str(best_zone)
+
+        return str(best_zone)
+
+    @staticmethod
+    def _mode_label(labels: List[Optional[str]], prev: Optional[str]) -> Optional[str]:
+        if not labels:
+            return prev
+        counts: Dict[Optional[str], int] = {}
+        for l in labels:
+            counts[l] = int(counts.get(l, 0)) + 1
+        # Remove None from mode preference unless everything is None.
+        if None in counts and len(counts) > 1:
+            counts.pop(None, None)
+        best = None
+        best_n = -1
+        for k, n in counts.items():
+            if n > best_n:
+                best = k
+                best_n = n
+            elif n == best_n and prev is not None and k == prev:
+                best = prev
+        return best
+
+    def _update_vehicle_zones(self, frame_shape: Tuple[int, int]):
+        """Assign each observed confirmed vehicle to exactly one zone (lane or intersection)."""
+        try:
+            shape = (int(frame_shape[0]), int(frame_shape[1]))
+        except Exception:
+            return
+        if shape[0] <= 0 or shape[1] <= 0:
+            return
+
+        clear_frames = int(getattr(config, "ZONE_ASSIGN_CLEAR_NONE_FRAMES", 2) or 2)
+        clear_frames = max(1, min(30, clear_frames))
+
+        for v in self.vehicles.values():
+            if not bool(getattr(v, "confirmed", False)):
+                continue
+            # Only update zone when we have an observed measurement.
+            if int(getattr(v, "lost_frames", 0) or 0) != 0:
+                continue
+
+            raw_zone = self._compute_majority_zone(getattr(v, "bbox", (0, 0, 0, 0)), shape)
+            prev_zone = getattr(v, "current_zone", None)
+
+            if raw_zone is None:
+                try:
+                    v._zone_none_frames = int(getattr(v, "_zone_none_frames", 0) or 0) + 1
+                except Exception:
+                    v._zone_none_frames = 1
+                if int(getattr(v, "_zone_none_frames", 0) or 0) >= clear_frames:
+                    try:
+                        v._zone_history.clear()
+                    except Exception:
+                        pass
+                    v.current_zone = None
+                    v.current_lane = None
+                continue
+
+            # Observed in some zone.
+            try:
+                v._zone_none_frames = 0
+            except Exception:
+                pass
+
+            hist = getattr(v, "_zone_history", None)
+            if not isinstance(hist, deque):
+                hist = deque(maxlen=7)
+                setattr(v, "_zone_history", hist)
+            hist.append(str(raw_zone))
+
+            stable_zone = self._mode_label(list(hist), prev_zone)
+            v.current_zone = stable_zone
+
+            # Only lanes are valid for violation logic.
+            if stable_zone in getattr(config, "LANES", {}):
+                v.current_lane = stable_zone
+            else:
+                v.current_lane = None
+
     def _create_bg_subtractor(self):
         history = int(getattr(config, "BACKGROUND_HISTORY", 120) or 120)
         var_threshold = int(getattr(config, "BACKGROUND_THRESHOLD", 30) or 30)
@@ -1230,6 +1478,13 @@ class VehicleDetector:
         for vehicle_id in to_remove:
             self.vehicles.pop(vehicle_id, None)
 
+        # Update per-vehicle lane/intersection assignment (metadata only).
+        # Must happen after removals so we don't waste work on pruned tracks.
+        try:
+            self._update_vehicle_zones(frame.shape[:2])
+        except Exception:
+            pass
+
         # Visibility policy:
         # - Always show tracks detected (matched) in THIS frame.
         # - During collision stability only, allow a very short "hold" window when the
@@ -1276,7 +1531,53 @@ class VehicleDetector:
                 pass
             visible.append(v)
 
+        # Update dashboard presence buffer.
+        # This is display/analytics only; tracking/boxes are unchanged.
+        try:
+            fps = float(getattr(config, "CAMERA_FPS", 30) or 30)
+        except Exception:
+            fps = 30.0
+        hold_frames = int(getattr(config, "DASHBOARD_COUNT_HOLD_FRAMES", 0) or 0)
+        if hold_frames <= 0:
+            hold_frames = int(round(max(2.0, min(6.0, fps * 0.12))))  # ~120ms
+
+        # Decrement TTLs.
+        for vid in list(self._dash_presence.keys()):
+            try:
+                self._dash_presence[vid]["ttl"] = int(self._dash_presence[vid].get("ttl", 0) or 0) - 1
+            except Exception:
+                self._dash_presence[vid]["ttl"] = 0
+            if int(self._dash_presence[vid].get("ttl", 0) or 0) <= 0:
+                self._dash_presence.pop(vid, None)
+
+        # Refresh TTL for observed confirmed tracks.
+        for v in self.vehicles.values():
+            if not bool(getattr(v, "confirmed", False)):
+                continue
+            if int(getattr(v, "lost_frames", 0) or 0) != 0:
+                continue
+            vid = int(getattr(v, "id", 0) or 0)
+            zone = getattr(v, "current_zone", None)
+            self._dash_presence[vid] = {"zone": zone, "ttl": int(hold_frames)}
+
         return visible
+
+    def get_stable_vehicle_count_total(self) -> int:
+        """Stable total vehicle count for dashboard display."""
+        return int(len(self._dash_presence))
+
+    def get_stable_vehicle_count_by_lane(self, *, include_intersection: bool = False) -> Dict[str, int]:
+        """Stable per-lane counts for dashboard display (debounced by a tiny TTL)."""
+        counts = {lane: 0 for lane in config.LANES.keys()}
+        if include_intersection:
+            counts["INTERSECTION"] = 0
+
+        for info in self._dash_presence.values():
+            zone = info.get("zone")
+            if zone in counts:
+                counts[zone] = int(counts.get(zone, 0)) + 1
+
+        return counts
 
     def _passes_shape_filters(self, contour: np.ndarray, w: int, h: int, contour_area: float) -> bool:
         """Heuristics to suppress non-car blobs (lane markings, glare, edges)."""
@@ -1427,19 +1728,56 @@ class VehicleDetector:
             kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, color_close_k)
             combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel_close)
 
-        # Save for presence checks.
-        self._last_color_mask = combined_mask
+        # Keep a copy of the pure car-color mask for presence checks / motion gating.
+        car_color_mask = combined_mask
+
+        # Merge nearby white roof-plate pixels into the detection mask.
+        # This makes plated vehicles detected as one blob without adding noticeable cost.
+        detection_mask = car_color_mask
+        if bool(getattr(config, "VEHICLE_PLATE_MERGE_ENABLE", False)):
+            try:
+                s_max = int(getattr(config, "LP_WHITE_S_MAX", 70) or 70)
+                v_min = int(getattr(config, "LP_WHITE_V_MIN", 160) or 160)
+                s_max = max(0, min(255, s_max))
+                v_min = max(0, min(255, v_min))
+                lower = np.array([0, 0, v_min], dtype=np.uint8)
+                upper = np.array([179, s_max, 255], dtype=np.uint8)
+                plate_white = cv2.inRange(hsv, lower, upper)
+
+                # Small morphology to reduce salt/pepper noise.
+                k_close = int(getattr(config, "LP_WHITE_CLOSE_KERNEL", 7) or 7)
+                k_open = int(getattr(config, "LP_WHITE_OPEN_KERNEL", 3) or 3)
+                k_close = max(1, min(31, k_close))
+                k_open = max(1, min(15, k_open))
+                close_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_close, k_close))
+                open_kernel = cv2.getStructuringElement(cv2.MORPH_RECT, (k_open, k_open))
+                plate_white = cv2.morphologyEx(plate_white, cv2.MORPH_CLOSE, close_kernel)
+                plate_white = cv2.morphologyEx(plate_white, cv2.MORPH_OPEN, open_kernel)
+
+                # Attach only white pixels that are close to car-color pixels.
+                dilate_px = int(getattr(config, "VEHICLE_PLATE_MERGE_DILATE_PX", 18) or 18)
+                dilate_px = max(3, min(65, dilate_px))
+                k = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, (dilate_px, dilate_px))
+                near_car = cv2.dilate(car_color_mask, k, iterations=1)
+                attached_plate = cv2.bitwise_and(plate_white, near_car)
+                if attached_plate is not None and attached_plate.size != 0:
+                    detection_mask = cv2.bitwise_or(car_color_mask, attached_plate)
+            except Exception:
+                detection_mask = car_color_mask
+
+        # Save pure color mask for presence checks.
+        self._last_color_mask = car_color_mask
 
         if getattr(config, "SHOW_COLOR_MASK", False):
-            cv2.imshow("USAD - Color Mask", combined_mask)
+            cv2.imshow("USAD - Color Mask", car_color_mask)
 
-        contours, _ = cv2.findContours(combined_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
+        contours, _ = cv2.findContours(detection_mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE)
 
         intersection_roi_mask = self._get_intersection_roi_mask(frame)
 
         detections: List[dict] = []
         for contour in contours:
-            for c in self._split_contour_if_needed(combined_mask, contour):
+            for c in self._split_contour_if_needed(detection_mask, contour):
                 area = cv2.contourArea(c)
                 if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
                     continue
@@ -1453,10 +1791,17 @@ class VehicleDetector:
                     continue
 
                 # Mask fill ratio is used only to decide whether to spawn new tracks.
-                mask_roi = combined_mask[y : y + h, x : x + w]
+                # Use detection_mask (car + attached plate) so roof-plate vehicles don't get rejected.
                 mask_ratio = 0.0
-                if mask_roi.size != 0 and w > 0 and h > 0:
-                    mask_ratio = float(cv2.countNonZero(mask_roi)) / float(w * h)
+                det_roi = detection_mask[y : y + h, x : x + w]
+                if det_roi.size != 0 and w > 0 and h > 0:
+                    mask_ratio = float(cv2.countNonZero(det_roi)) / float(w * h)
+
+                # Also keep a pure car-color ratio as a safety check.
+                color_ratio = 0.0
+                color_roi = car_color_mask[y : y + h, x : x + w]
+                if color_roi.size != 0 and w > 0 and h > 0:
+                    color_ratio = float(cv2.countNonZero(color_roi)) / float(w * h)
 
                 center = (x + w // 2, y + h // 2)
 
@@ -1490,7 +1835,15 @@ class VehicleDetector:
                     if not is_in_lane:
                         continue
 
-                detections.append({"center": center, "bbox": (x, y, w, h), "area": area, "mask_ratio": mask_ratio})
+                detections.append(
+                    {
+                        "center": center,
+                        "bbox": (x, y, w, h),
+                        "area": area,
+                        "mask_ratio": mask_ratio,
+                        "color_ratio": color_ratio,
+                    }
+                )
 
         return detections
 
@@ -1574,7 +1927,29 @@ class VehicleDetector:
                     if not is_in_lane:
                         continue
 
-                detections.append({"center": center, "bbox": (x, y, w, h), "area": area, "mask_ratio": mask_ratio})
+                det = {"center": center, "bbox": (x, y, w, h), "area": area, "mask_ratio": mask_ratio}
+
+                # When color segmentation is enabled, compute car-color presence in this
+                # motion bbox. This is used to decide whether motion can spawn NEW tracks
+                # (helps when a roof-mounted white plate reduces color-mask area).
+                if self.use_color_segmentation and self._last_color_mask is not None:
+                    try:
+                        cm = self._last_color_mask
+                        h_img, w_img = cm.shape[:2]
+                        x0 = int(max(0, min(w_img - 1, x)))
+                        y0 = int(max(0, min(h_img - 1, y)))
+                        x1 = int(max(0, min(w_img, x + w)))
+                        y1 = int(max(0, min(h_img, y + h)))
+                        if x1 > x0 and y1 > y0:
+                            roi = cm[y0:y1, x0:x1]
+                            denom = float(max(1, (x1 - x0) * (y1 - y0)))
+                            det["color_ratio"] = float(cv2.countNonZero(roi)) / denom
+                        else:
+                            det["color_ratio"] = 0.0
+                    except Exception:
+                        det["color_ratio"] = 0.0
+
+                detections.append(det)
 
         return detections
     
@@ -1763,9 +2138,16 @@ class VehicleDetector:
             source = det.get("source")
 
             # When color segmentation is enabled, motion detections are only used to
-            # re-acquire existing tracks and must not create new ones (prevents ghosts).
+            # re-acquire existing tracks and must not create new ones by default.
+            # Exception: allow NEW motion tracks only when there is sufficient car-color
+            # presence inside the motion bbox (prevents the white paper plate from
+            # spawning as a separate object, but allows plated vehicles to be detected).
             if self.use_color_segmentation and source == "motion":
-                continue
+                min_motion_color = float(getattr(config, "MOTION_NEW_TRACK_MIN_COLOR_RATIO", 0.01) or 0.01)
+                min_motion_color = max(0.0, min(0.25, min_motion_color))
+                color_ratio = float(det.get("color_ratio", 0.0) or 0.0)
+                if color_ratio < min_motion_color:
+                    continue
 
             if new_track_min_area > 0 and float(det.get("area", 0.0)) < new_track_min_area:
                 continue
@@ -1780,87 +2162,28 @@ class VehicleDetector:
         """Get all vehicles in a specific lane"""
         if lane_key not in config.LANES:
             return []
-        
-        lane_region = np.array(config.LANES[lane_key]["region"], dtype=np.int32)
-        
-        # Apply padding to shrink lane detection area (prevents edge detection)
-        if hasattr(config, 'LANE_PADDING') and config.LANE_PADDING > 0:
-            # Calculate center of lane
-            center_x = int(np.mean(lane_region[:, 0]))
-            center_y = int(np.mean(lane_region[:, 1]))
-            
-            # Shrink polygon towards center by padding amount
-            padded_region = []
-            for point in lane_region:
-                dx = point[0] - center_x
-                dy = point[1] - center_y
-                dist = np.sqrt(dx*dx + dy*dy)
-                if dist > 0:
-                    # Move point towards center by padding amount
-                    scale = max(0, (dist - config.LANE_PADDING)) / dist
-                    new_x = int(center_x + dx * scale)
-                    new_y = int(center_y + dy * scale)
-                    padded_region.append([new_x, new_y])
-                else:
-                    padded_region.append([point[0], point[1]])
-            lane_region = np.array(padded_region, dtype=np.int32)
-        
-        vehicles_in_lane = []
-        
+
+        vehicles_in_lane: List[Vehicle] = []
         for vehicle in self.vehicles.values():
             if not getattr(vehicle, "confirmed", False):
                 continue
-            # Only count vehicles observed in the current frame.
+            # Only count vehicles observed in the current frame (control logic).
             if int(getattr(vehicle, "lost_frames", 0) or 0) != 0:
                 continue
-            x, y, w, h = vehicle.bbox
-            pts = [
-                vehicle.center,
-                (x + 2, y + 2),
-                (x + w - 2, y + 2),
-                (x + 2, y + h - 2),
-                (x + w - 2, y + h - 2),
-                (x + w // 2, y + h - 2),
-            ]
-
-            if any(cv2.pointPolygonTest(lane_region, p, False) >= 0 for p in pts):
-                vehicle.current_lane = lane_key
+            if getattr(vehicle, "current_lane", None) == lane_key:
                 vehicles_in_lane.append(vehicle)
-        
         return vehicles_in_lane
 
     def get_vehicles_in_intersection(self) -> List[Vehicle]:
         """Get vehicles in the middle intersection zone."""
-        if not hasattr(config, "INTERSECTION_CENTER"):
-            return []
-
-        try:
-            inter_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
-        except Exception:
-            return []
-
         vehicles_in_zone: List[Vehicle] = []
         for vehicle in self.vehicles.values():
             if not getattr(vehicle, "confirmed", False):
                 continue
-            # Only count vehicles observed in the current frame.
             if int(getattr(vehicle, "lost_frames", 0) or 0) != 0:
                 continue
-
-            x, y, w, h = vehicle.bbox
-            pts = [
-                vehicle.center,
-                (x + 2, y + 2),
-                (x + w - 2, y + 2),
-                (x + 2, y + h - 2),
-                (x + w - 2, y + h - 2),
-                (x + w // 2, y + h - 2),
-            ]
-
-            if any(cv2.pointPolygonTest(inter_region, p, False) >= 0 for p in pts):
-                vehicle.current_lane = "INTERSECTION"
+            if getattr(vehicle, "current_zone", None) == "INTERSECTION":
                 vehicles_in_zone.append(vehicle)
-
         return vehicles_in_zone
     
     def get_vehicle_count_by_lane(self, *, include_intersection: bool = False) -> Dict[str, int]:
@@ -1882,21 +2205,81 @@ class VehicleDetector:
     
     def draw_vehicles(self, frame: np.ndarray, vehicles: List[Vehicle]) -> np.ndarray:
         """Draw vehicles on frame"""
+        use_display_smoothing = bool(getattr(config, "DISPLAY_BBOX_STABILIZATION", True))
+        alpha = float(getattr(config, "DISPLAY_BBOX_ALPHA", 0.20) or 0.20)
+        alpha = max(0.0, min(0.95, alpha))
+        deadband = int(getattr(config, "DISPLAY_BBOX_DEADBAND_PX", 2) or 0)
+        deadband = max(0, min(25, deadband))
+
         for vehicle in vehicles:
+            vid = int(getattr(vehicle, "id", 0) or 0)
+
+            # Start with the tracker-provided bbox/center (used by all logic elsewhere).
             x, y, w, h = map(int, vehicle.bbox)
+            cx, cy = map(int, vehicle.center)
+
+            # Display-only stabilization: smooth + deadband to eliminate twitch.
+            if use_display_smoothing and vid > 0 and alpha > 0.0:
+                bb = np.array([x, y, max(1, w), max(1, h)], dtype=np.float32)
+                cc = np.array([cx, cy], dtype=np.float32)
+
+                prior_bb = self._display_bbox_ema.get(vid)
+                prior_cc = self._display_center_ema.get(vid)
+                if prior_bb is None or prior_bb.shape != (4,):
+                    self._display_bbox_ema[vid] = bb
+                else:
+                    self._display_bbox_ema[vid] = (alpha * bb) + ((1.0 - alpha) * prior_bb)
+                if prior_cc is None or prior_cc.shape != (2,):
+                    self._display_center_ema[vid] = cc
+                else:
+                    self._display_center_ema[vid] = (alpha * cc) + ((1.0 - alpha) * prior_cc)
+
+                out_bb = self._display_bbox_ema[vid]
+                out_cc = self._display_center_ema[vid]
+
+                sx, sy, sw, sh = (int(round(float(out_bb[0]))), int(round(float(out_bb[1]))), int(round(float(out_bb[2]))), int(round(float(out_bb[3]))))
+                scx, scy = (int(round(float(out_cc[0]))), int(round(float(out_cc[1]))))
+
+                if deadband > 0 and prior_bb is not None:
+                    px, py, pw, ph = (int(round(float(prior_bb[0]))), int(round(float(prior_bb[1]))), int(round(float(prior_bb[2]))), int(round(float(prior_bb[3]))))
+                    if abs(sx - px) <= deadband:
+                        sx = px
+                    if abs(sy - py) <= deadband:
+                        sy = py
+                    if abs(sw - pw) <= deadband:
+                        sw = pw
+                    if abs(sh - ph) <= deadband:
+                        sh = ph
+
+                x, y, w, h = sx, sy, max(1, sw), max(1, sh)
+                cx, cy = scx, scy
             
             color = config.COLOR_VEHICLE
             cv2.rectangle(frame, (x, y), (x + w, y + h), color, 2)
             
-            cv2.circle(frame, tuple(map(int, vehicle.center)), 4, color, -1)
+            cv2.circle(frame, (int(cx), int(cy)), 4, color, -1)
             
             if config.SHOW_VEHICLE_IDS:
-                label = f"ID:{vehicle.id} {vehicle.vehicle_type}"
-                if vehicle.license_plate:
-                    label += f" {vehicle.license_plate}"
-                
-                cv2.putText(frame, label, (x, y - 10),
-                           cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+                plate_text = str(vehicle.license_plate).strip() if getattr(vehicle, "license_plate", None) else "----"
+
+                id_text = f"ID: {vehicle.id}"
+                type_text = f" {vehicle.vehicle_type}" if getattr(vehicle, "vehicle_type", None) else ""
+
+                org = (x, y - 10)
+                font = cv2.FONT_HERSHEY_SIMPLEX
+                font_scale = 0.5
+                thickness = 2
+
+                cv2.putText(frame, id_text, org, font, font_scale, color, thickness)
+
+                (id_w, _), _ = cv2.getTextSize(id_text, font, font_scale, thickness)
+                plate_org = (int(org[0] + id_w + 10), int(org[1]))
+                cv2.putText(frame, plate_text, plate_org, font, font_scale, config.COLOR_LICENSE_PLATE, thickness)
+
+                if type_text:
+                    (plate_w, _), _ = cv2.getTextSize(plate_text, font, font_scale, thickness)
+                    type_org = (int(plate_org[0] + plate_w + 10), int(org[1]))
+                    cv2.putText(frame, type_text, type_org, font, font_scale, color, thickness)
             
             if len(vehicle.positions) > 1:
                 points = np.array(vehicle.positions, dtype=np.int32)
@@ -1916,6 +2299,8 @@ class VehicleDetector:
 
         self.had_detections_this_frame = False
         self.had_confirmed_updates_this_frame = False
+
+        self._dash_presence.clear()
 
         if reset_background:
             self._reset_background_learning(verbose=verbose)

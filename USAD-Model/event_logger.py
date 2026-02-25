@@ -2,12 +2,17 @@
 
 import csv
 import os
+import re
 from datetime import datetime
 from typing import List, Dict, Optional
 import time
 import config
 from violation_detector import Violation
 from accident_detector import Accident
+
+
+_PLATE_RE = re.compile(r"^[A-Z]{3}[0-9]{3}$")
+_PLATE_REG_LINE_RE = re.compile(r"^([A-Z]{3}[0-9]{3})\s*-\s*Detected:\s*(\d+)\s*times\s*$")
 
 
 class EventLogger:
@@ -19,10 +24,82 @@ class EventLogger:
         self.event_log_path = os.path.join(config.LOG_DIRECTORY, config.EVENT_LOG_FILE)
         self.violation_log_path = os.path.join(config.LOG_DIRECTORY, config.VIOLATION_LOG_FILE)
         self.accident_log_path = os.path.join(config.LOG_DIRECTORY, config.ACCIDENT_LOG_FILE)
+
+        self.plate_registry_path = os.path.join(
+            config.LOG_DIRECTORY,
+            str(getattr(config, "PLATE_REGISTRY_FILE", "plates.txt")),
+        )
+        self._plate_counts: Dict[str, int] = {}
+        self._plate_registry_dirty = False
+        self._plate_registry_last_flush = 0.0
+        self._load_plate_registry()
         
         self._initialize_log_files()
         
         self.last_analytics_update = time.time()
+
+    def _load_plate_registry(self):
+        self._plate_counts = {}
+        path = self.plate_registry_path
+        if not path or (not os.path.exists(path)):
+            return
+        try:
+            with open(path, "r", encoding="utf-8") as f:
+                for line in f:
+                    line = (line or "").strip()
+                    if not line:
+                        continue
+                    m = _PLATE_REG_LINE_RE.match(line)
+                    if not m:
+                        continue
+                    plate = m.group(1)
+                    count = int(m.group(2))
+                    self._plate_counts[plate] = max(int(self._plate_counts.get(plate, 0)), int(count))
+        except Exception:
+            # Best-effort: ignore parse errors.
+            self._plate_counts = {}
+
+    def record_plate(self, plate_text: Optional[str]):
+        """Record a confirmed plate (increments persistent count)."""
+        if not plate_text:
+            return
+        plate = str(plate_text).upper().strip()
+        plate = re.sub(r"[^A-Z0-9]", "", plate)
+        if not _PLATE_RE.match(plate):
+            return
+
+        self._plate_counts[plate] = int(self._plate_counts.get(plate, 0)) + 1
+        self._plate_registry_dirty = True
+
+        flush_interval = float(getattr(config, "PLATE_REGISTRY_FLUSH_INTERVAL_SECONDS", 1.0) or 1.0)
+        flush_interval = max(0.0, min(10.0, flush_interval))
+        now = time.time()
+        if flush_interval == 0.0 or (now - float(self._plate_registry_last_flush or 0.0)) >= flush_interval:
+            self._flush_plate_registry(now=now)
+
+    def _flush_plate_registry(self, *, now: Optional[float] = None):
+        if not self._plate_registry_dirty:
+            return
+        path = self.plate_registry_path
+        if not path:
+            return
+        t = float(now if now is not None else time.time())
+        tmp = path + ".tmp"
+        try:
+            lines = [f"{plate} - Detected: {int(count)} times" for plate, count in sorted(self._plate_counts.items())]
+            with open(tmp, "w", encoding="utf-8") as f:
+                for line in lines:
+                    f.write(line + "\n")
+            os.replace(tmp, path)
+            self._plate_registry_last_flush = t
+            self._plate_registry_dirty = False
+        except Exception:
+            # Best-effort: keep dirty flag; try again later.
+            try:
+                if os.path.exists(tmp):
+                    os.remove(tmp)
+            except Exception:
+                pass
         
     def _initialize_log_files(self):
         """Create log files with headers if they don't exist"""
@@ -43,14 +120,44 @@ class EventLogger:
                     'speed', 'location_x', 'location_y'
                 ])
         
+        desired_accident_header = [
+            'timestamp', 'date', 'time', 'hour', 'accident_type', 'accident_id',
+            'lane', 'vehicle_ids', 'vehicle_count', 'duration', 'emergency_notified',
+            'location_x', 'location_y', 'license_plates'
+        ]
+
         if not os.path.exists(self.accident_log_path):
             with open(self.accident_log_path, 'w', newline='') as f:
                 writer = csv.writer(f)
-                writer.writerow([
-                    'timestamp', 'date', 'time', 'hour', 'accident_type', 'accident_id',
-                    'lane', 'vehicle_ids', 'vehicle_count', 'duration', 'emergency_notified',
-                    'location_x', 'location_y'
-                ])
+                writer.writerow(desired_accident_header)
+        else:
+            # Migrate header if older accidents.csv exists without license_plates.
+            try:
+                with open(self.accident_log_path, 'r', newline='') as f:
+                    reader = csv.reader(f)
+                    existing_header = next(reader, None)
+                if not existing_header:
+                    raise ValueError("empty header")
+
+                if 'license_plates' not in [h.strip() for h in existing_header]:
+                    rows = []
+                    with open(self.accident_log_path, 'r', newline='') as f:
+                        dict_reader = csv.DictReader(f)
+                        for row in dict_reader:
+                            rows.append(row)
+
+                    tmp_path = self.accident_log_path + ".tmp"
+                    with open(tmp_path, 'w', newline='') as f:
+                        writer = csv.DictWriter(f, fieldnames=desired_accident_header)
+                        writer.writeheader()
+                        for row in rows:
+                            row = dict(row)
+                            row.setdefault('license_plates', '')
+                            writer.writerow(row)
+                    os.replace(tmp_path, self.accident_log_path)
+            except Exception:
+                # Best-effort: if migration fails, keep existing file.
+                pass
     
     def log_violation(self, violation: Violation):
         """Log a traffic violation"""
@@ -94,6 +201,7 @@ class EventLogger:
         dt = datetime.fromtimestamp(accident.detected_time)
         
         vehicle_ids = ','.join([str(v.id) for v in accident.vehicles])
+        license_plates = ','.join([(v.license_plate or 'N/A') for v in accident.vehicles])
         
         row = [
             dt.isoformat(),
@@ -108,7 +216,8 @@ class EventLogger:
             round(accident.get_duration(), 2),
             'Yes' if notified else 'No',
             accident.location[0],
-            accident.location[1]
+            accident.location[1],
+            license_plates
         ]
         
         with open(self.accident_log_path, 'a', newline='') as f:
@@ -117,7 +226,8 @@ class EventLogger:
         
         vehicle_id = accident.vehicles[0].id if accident.vehicles else 'N/A'
         vehicle_type = accident.vehicles[0].vehicle_type if accident.vehicles else 'N/A'
-        license_plate = accident.vehicles[0].license_plate if accident.vehicles else None
+        # For accidents, attach ALL involved plates in the single event record.
+        license_plate = license_plates if license_plates else None
         
         self._log_event(
             'ACCIDENT',

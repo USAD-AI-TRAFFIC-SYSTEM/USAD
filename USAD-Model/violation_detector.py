@@ -122,6 +122,9 @@ class ViolationDetector:
             return None
         
         lane_key = vehicle.current_lane
+
+        if lane_key not in config.LANES:
+            return None
         
         if self.current_signals.get(lane_key) != "RED":
             return None
@@ -156,6 +159,9 @@ class ViolationDetector:
             return None
         
         lane_key = vehicle.current_lane
+
+        if lane_key not in config.LANES:
+            return None
         
         if self.current_signals.get(lane_key) != "YELLOW":
             return None
@@ -197,6 +203,9 @@ class ViolationDetector:
             return None
         
         lane_key = vehicle.current_lane
+
+        if lane_key not in config.LANES:
+            return None
         lane_direction = config.LANES[lane_key]["direction"]
         
         vehicle_direction = vehicle.get_direction()

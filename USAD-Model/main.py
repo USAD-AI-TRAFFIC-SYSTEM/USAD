@@ -82,6 +82,15 @@ class USAD:
         self.license_plate_detector = LicensePlateDetector()
         self.event_logger = EventLogger()
         self.emergency_notifier = EmergencyNotifier()
+
+        try:
+            if bool(getattr(self.license_plate_detector, "ocr_available", False)):
+                mode = str(getattr(self.license_plate_detector, "ocr_mode", "enabled"))
+                print(f"[LP] ✓ License plate OCR enabled ({mode})")
+            else:
+                print("[LP] ✗ License plate OCR disabled")
+        except Exception:
+            pass
         
         # State variables
         self.current_active_lane = None
@@ -195,6 +204,11 @@ class USAD:
         vehicles = self.vehicle_detector.detect_vehicles(frame)
 
         now = time.time()
+        # One tick per processed frame (used for non-blocking plate cadence/validation).
+        try:
+            self._lp_frame_index += 1
+        except Exception:
+            self._lp_frame_index = int(getattr(self, "_lp_frame_index", 0) or 0) + 1
         # Consider a car "seen" only if there was a fresh detection / confirmed track update.
         # Tracks can linger for a few seconds by design; this prevents stale boxes/alerts.
         if bool(getattr(self.vehicle_detector, "had_detections_this_frame", False)) or bool(
@@ -231,6 +245,38 @@ class USAD:
         
         # Handle emergency notifications for confirmed accidents
         for accident in confirmed_accidents:
+            # Best-effort: try to obtain stable plates for involved vehicles before logging.
+            if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
+                try:
+                    per_accident_cap = int(getattr(config, "LP_EVENT_MAX_VEHICLES_PER_ACCIDENT", 2) or 2)
+                    per_accident_cap = max(0, min(10, per_accident_cap))
+                except Exception:
+                    per_accident_cap = 2
+                attempts = 0
+                now_ts = time.time()
+                for v in getattr(accident, "vehicles", []) or []:
+                    if attempts >= per_accident_cap:
+                        break
+                    if getattr(v, "license_plate", None):
+                        continue
+                    result = self.license_plate_detector.update_plate_for_vehicle(
+                        frame,
+                        v.bbox,
+                        int(v.id),
+                        frame_index=int(getattr(self, "_lp_frame_index", 0) or 0),
+                        now_ts=now_ts,
+                    )
+                    if result:
+                        plate_text, confidence, plate_bbox = result
+                        v.license_plate = plate_text
+                        v.license_plate_confidence = float(confidence)
+                        try:
+                            v.license_plate_bbox = tuple(int(x) for x in plate_bbox)
+                        except Exception:
+                            pass
+                        self.event_logger.record_plate(plate_text)
+                    attempts += 1
+
             if not accident.notified:
                 notified = self.emergency_notifier.notify_accident(accident)
                 if notified:
@@ -244,41 +290,63 @@ class USAD:
         
         # Log new violations
         for violation in new_violations:
+            # Best-effort: try to obtain a stable plate before logging.
+            if config.ENABLE_LICENSE_PLATE_DETECTION:
+                try:
+                    v = getattr(violation, "vehicle", None)
+                    if v is not None and (not getattr(v, "license_plate", None)):
+                        result = self.license_plate_detector.update_plate_for_vehicle(
+                            frame,
+                            v.bbox,
+                            int(v.id),
+                            frame_index=int(getattr(self, "_lp_frame_index", 0) or 0),
+                            now_ts=float(getattr(violation, "timestamp", time.time())),
+                        )
+                        if result:
+                            plate_text, confidence, plate_bbox = result
+                            v.license_plate = plate_text
+                            v.license_plate_confidence = float(confidence)
+                            try:
+                                v.license_plate_bbox = tuple(int(x) for x in plate_bbox)
+                            except Exception:
+                                pass
+                            violation.license_plate = plate_text
+                            self.event_logger.record_plate(plate_text)
+                except Exception:
+                    pass
             self.event_logger.log_violation(violation)
         
         # License plate detection
         if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
-            # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
-            self._lp_frame_index += 1
-            every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
-            max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
-            cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
-            if every_n <= 0:
-                every_n = 1
-            if max_per_frame < 0:
-                max_per_frame = 0
+            # Non-blocking pipeline: bbox detection is cheap and runs per frame,
+            # OCR is async + rate-limited inside the detector.
+            now_ts = time.time()
+            for vehicle in vehicles:
+                if getattr(vehicle, "license_plate", None):
+                    continue
+                result = self.license_plate_detector.update_plate_for_vehicle(
+                    frame,
+                    vehicle.bbox,
+                    int(vehicle.id),
+                    frame_index=int(getattr(self, "_lp_frame_index", 0) or 0),
+                    now_ts=now_ts,
+                )
+                if result:
+                    plate_text, confidence, plate_bbox = result
+                    vehicle.license_plate = plate_text
+                    vehicle.license_plate_confidence = float(confidence)
+                    try:
+                        vehicle.license_plate_bbox = tuple(int(x) for x in plate_bbox)
+                    except Exception:
+                        pass
+                    self.event_logger.record_plate(plate_text)
 
-            if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
-                now_ts = time.time()
-                attempts = 0
-                for vehicle in vehicles:
-                    if vehicle.license_plate:
-                        continue
-
-                    last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
-                    if cooldown > 0 and (now_ts - last_ts) < cooldown:
-                        continue
-
-                    self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
-                    result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
-                    if result:
-                        plate_text, confidence, plate_bbox = result
-                        vehicle.license_plate = plate_text
-                        vehicle.license_plate_confidence = confidence
-
-                    attempts += 1
-                    if attempts >= max_per_frame:
-                        break
+            # Cleanup tracker state for vehicles that have left.
+            try:
+                active_ids = {int(v.id) for v in vehicles}
+                self.license_plate_detector.cleanup(active_vehicle_ids=active_ids, now=time.time(), frame_index=int(getattr(self, "_lp_frame_index", 0) or 0))
+            except Exception:
+                pass
         
         # Intelligent traffic control
         self.update_traffic_control(lane_counts_for_control, accidents)
@@ -512,6 +580,20 @@ class USAD:
         if not self._no_car_idle_mode:
             frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
 
+            # Draw license plate bbox + text (above the vehicle) when available.
+            if bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)) and bool(
+                getattr(config, "DRAW_LICENSE_PLATE_BBOX", True)
+            ):
+                for v in vehicles:
+                    plate = getattr(v, "license_plate", None)
+                    pb = getattr(v, "license_plate_bbox", None)
+                    conf = float(getattr(v, "license_plate_confidence", 0.0) or 0.0)
+                    if plate and pb:
+                        try:
+                            frame = self.license_plate_detector.draw_license_plate(frame, str(plate), pb, conf)
+                        except Exception:
+                            pass
+
             frame = self.accident_detector.draw_stopped_vehicles(frame, vehicles)
 
             frame = self.accident_detector.draw_accidents(frame)
@@ -558,10 +640,21 @@ class USAD:
         
         y_offset += 25
         
-        cv2.putText(frame, f"Vehicles: {len(vehicles)}", (x_left, y_offset),
+        # Display-only stabilization: use a tiny TTL-based buffer so counts
+        # don't flicker 1→0→1 on single-frame misses.
+        stable_total = int(getattr(self.vehicle_detector, "get_stable_vehicle_count_total", lambda: len(vehicles))())
+        stable_lane_counts = dict(
+            getattr(
+                self.vehicle_detector,
+                "get_stable_vehicle_count_by_lane",
+                lambda **kwargs: lane_counts,
+            )(include_intersection=True)
+        )
+
+        cv2.putText(frame, f"Vehicles: {stable_total}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
-        lane_text = " | ".join([f"{lane}: {count}" for lane, count in lane_counts.items()])
+        lane_text = " | ".join([f"{lane}: {count}" for lane, count in stable_lane_counts.items()])
         cv2.putText(frame, lane_text, (x_left + 150, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
@@ -590,13 +683,13 @@ class USAD:
         y_offset += 20
         lane_states = []
         for lane_key in config.LANES.keys():
-            count = int(lane_counts.get(lane_key, 0))
+            count = int(stable_lane_counts.get(lane_key, 0))
             state = self._classify_lane_congestion(count)
             lane_states.append(f"{lane_key}:{state}")
 
         # Intersection/center zone status (display-only; not part of signal control).
-        if "INTERSECTION" in lane_counts:
-            inter_count = int(lane_counts.get("INTERSECTION", 0))
+        if "INTERSECTION" in stable_lane_counts:
+            inter_count = int(stable_lane_counts.get("INTERSECTION", 0))
             inter_state = self._classify_lane_congestion(inter_count)
             lane_states.append(f"INTERSECTION:{inter_state}")
         cv2.putText(
@@ -612,7 +705,7 @@ class USAD:
         y_offset += 18
         durations = []
         for lane_key in config.LANES.keys():
-            durations.append(f"{lane_key}:{self._compute_green_duration(lane_key, lane_counts)}s")
+            durations.append(f"{lane_key}:{self._compute_green_duration(lane_key, stable_lane_counts)}s")
         cv2.putText(
             frame,
             "Adaptive green: " + " | ".join(durations),
@@ -625,28 +718,56 @@ class USAD:
         
         y_offset += 25
         
-        # Accidents
+        def _text_w(text: str, font_scale: float = 0.5, thickness: int = 1) -> int:
+            (tw, _), _ = cv2.getTextSize(text, cv2.FONT_HERSHEY_SIMPLEX, font_scale, thickness)
+            return int(tw)
+
+        # Accidents / stopped / violations (laid out with spacing to avoid overlaps)
         accident_count = len([a for a in accidents if a.confirmed])
         accident_color = (0, 0, 255) if accident_count > 0 else (255, 255, 255)
-        cv2.putText(frame, f"Accidents: {accident_count}", (x_left, y_offset),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, accident_color, 1)
-
-        # Stopped/queued cars
-        stopped_count = len(self.accident_detector.get_stopped_vehicle_ids())
+        accidents_text = f"Accidents: {accident_count}"
         cv2.putText(
             frame,
-            f"Stopped cars: {stopped_count}",
-            (x_left + 140, y_offset),
+            accidents_text,
+            (x_left, y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            accident_color,
+            1,
+        )
+
+        stopped_count = len(self.accident_detector.get_stopped_vehicle_ids())
+        stopped_text = f"Stopped cars: {stopped_count}"
+        x_stopped = x_left + _text_w(accidents_text) + 25
+        cv2.putText(
+            frame,
+            stopped_text,
+            (x_stopped, y_offset),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.5,
             (0, 255, 255),
             1,
         )
-        
-        # Violations
+
         violation_stats = self.violation_detector.get_statistics()
-        cv2.putText(frame, f"Violations: {violation_stats['total_violations']}", (x_left + 200, y_offset),
-                   cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
+        violations_text = f"Violations: {violation_stats['total_violations']}"
+        x_violations_inline = x_stopped + _text_w(stopped_text) + 25
+        vw = _text_w(violations_text)
+        if x_violations_inline + vw <= (width - 20):
+            x_violations = x_violations_inline
+        else:
+            x_violations = x_right
+            if x_violations + vw > (width - 20):
+                x_violations = max(x_left, (width - 20) - vw)
+        cv2.putText(
+            frame,
+            violations_text,
+            (int(x_violations), y_offset),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.5,
+            (0, 165, 255),
+            1,
+        )
         
         y_offset += 25
         

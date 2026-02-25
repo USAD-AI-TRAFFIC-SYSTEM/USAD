@@ -1,4 +1,7 @@
 opencv-python>=4.8.0
 numpy>=1.24.0
 pyserial>=3.5
-easyocr>=1.7.0
+# Optional (heavy): EasyOCR pulls Torch and may install headless OpenCV.
+# easyocr>=1.7.0
+pytesseract>=0.3.13
+Pillow>=10.0.0
