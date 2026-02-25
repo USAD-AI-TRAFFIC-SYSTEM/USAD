@@ -96,6 +96,12 @@ CAR_COLOR_RANGES = [
 # Minimum fraction of bbox pixels matching a car color.
 CAR_COLOR_MIN_RATIO = 0.02
 
+# When USE_COLOR_SEGMENTATION is enabled, we usually prevent motion-only blobs from
+# spawning new tracks (to avoid ghosts). A roof-mounted white plate can reduce the
+# color-mask blob enough to miss first-time detections, so allow motion to spawn a
+# new track only if there is still some car-color present in the motion bbox.
+MOTION_NEW_TRACK_MIN_COLOR_RATIO = 0.01
+
 MAX_TRACKING_DISTANCE = 80  # pixels
 MIN_TRACKING_IOU = 0.05
 TRACKING_NEAR_DISTANCE_RATIO = 0.6
@@ -278,13 +284,101 @@ LP_MAX_HEIGHT = 80
 LP_ASPECT_RATIO_MIN = 1.8
 LP_ASPECT_RATIO_MAX = 8.0  # more flexible for various tape sizes
 
+# Roof-mounted plate constraint: search only the upper portion of the vehicle ROI.
+# Keep these conservative to avoid scanning the entire car (performance).
+LP_VEHICLE_PADDING_PX = 10
+LP_ABOVE_VEHICLE_EXTRA_PX = 25
+# Additional above-search as a fraction of vehicle bbox height.
+# Useful when the plate is mounted above the detected car bbox.
+LP_ABOVE_VEHICLE_EXTRA_RATIO = 0.85
+LP_ROOF_Y_MAX_RATIO = 0.45
+LP_ROOF_X_MARGIN_RATIO = 0.05
+
+# Candidate/OCR tuning
+LP_MAX_CANDIDATES_PER_VEHICLE = 3
+LP_OCR_ROTATIONS = [0, 90, 180, 270]
+LP_OCR_ALLOWLIST = "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789"
+LP_MIN_OCR_CONFIDENCE = 35.0  # percent
+
+# TEST MODE: accept any alphanumeric OCR result (not strict AAA999).
+LP_TEST_READ_ALL_ALNUM = True
+LP_TEST_ALNUM_MIN_LEN = 1
+LP_TEST_ALNUM_MAX_LEN = 20
+
+# Performance: template OCR is fast (OpenCV-only) and avoids UI stalls.
+LP_PREFER_TEMPLATE_OCR = False
+
+# Non-blocking OCR pipeline (runs OCR in a background thread).
+LP_ASYNC_OCR_ENABLE = True
+
+# Multi-frame validation before OCR: require N consecutive detections.
+LP_OCR_CONSECUTIVE_DETECTIONS = 2
+
+# Controlled OCR cadence per vehicle (5–10 frames typical).
+LP_OCR_EVERY_N_FRAMES = 3
+
+# Performance safeguards.
+LP_OCR_MAX_CALLS_PER_SECOND = 2.0
+LP_OCR_JOB_QUEUE_SIZE = 16
+LP_OCR_TIMEOUT_SECONDS = 2.50
+
+# Preprocessing: upscale plate patch before OCR (2x or 3x recommended).
+LP_OCR_UPSCALE = 2.0
+
+# Cache: do not re-run OCR once confidence is high enough.
+LP_OCR_CACHE_MIN_CONF = 60.0
+
+# Tesseract can be slow; keep it conservative by default.
+LP_TESSERACT_ROTATIONS = [0]
+LP_TESSERACT_MAX_VARIANTS = 2
+
+# Visualization
+DRAW_LICENSE_PLATE_BBOX = True
+
+# Temporal stability (avoid flicker): only confirm after consistent multi-frame votes.
+LP_STABLE_MIN_OBSERVATIONS = 2
+LP_STABLE_MIN_RATIO = 0.60
+# With LP_MIN_OCR_CONFIDENCE=35% and 2 observations, the minimum possible score is 70.
+# Keep the score threshold aligned so plates can actually confirm.
+LP_STABLE_MIN_SCORE = 70.0
+LP_TRACK_TTL_SECONDS = 12.0
+
+# Plate bbox smoothing/tracking (display + consistent OCR ROI)
+LP_BBOX_SMOOTHING_ALPHA = 0.35
+
+# Vehicle detection (optional): merge attached white roof-plate pixels into the car blob.
+# Default is OFF to preserve the existing object detection behavior.
+VEHICLE_PLATE_MERGE_ENABLE = False
+VEHICLE_PLATE_MERGE_DILATE_PX = 18
+
+# Display-only stabilization (does NOT affect detection/tracking logic)
+DISPLAY_BBOX_STABILIZATION = True
+DISPLAY_BBOX_ALPHA = 0.20
+DISPLAY_BBOX_DEADBAND_PX = 2
+
 # OCR Configuration
 TESSERACT_CONFIG = '--psm 8 --oem 3 -c tessedit_char_whitelist=ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789'
+
+# Optional: explicit Tesseract executable path (helps when PATH isn't refreshed).
+# Example: r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+TESSERACT_CMD = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
+
+# Template OCR fallback (OpenCV-only)
+# Used automatically when EasyOCR isn't available.
+LP_TEMPLATE_OCR_ENABLE = True
+LP_TEMPLATE_OCR_SIZE = 36
+LP_TEMPLATE_OCR_OPEN_KERNEL = 2
+LP_TEMPLATE_OCR_CHAR_PAD = 2
+LP_TEMPLATE_MIN_CHAR_SCORE = 0.45
+LP_TEMPLATE_OCR_ROTATIONS = [0, 90, 180, 270]
 
 # License plate OCR throttling (EasyOCR can be expensive)
 LP_DETECT_EVERY_N_FRAMES = 10
 LP_MAX_VEHICLES_PER_FRAME = 1
-LP_PER_VEHICLE_COOLDOWN_SECONDS = 2.0
+LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.5
+
+# Event-time best-effort OCR caps (accidents/violations). Keep low to avoid lag.
+LP_EVENT_MAX_VEHICLES_PER_ACCIDENT = 2
 
 # Emergency notification
 EMERGENCY_HOTLINE = "911"
@@ -297,6 +391,8 @@ LOG_DIRECTORY = "logs"
 EVENT_LOG_FILE = "traffic_events.csv"
 VIOLATION_LOG_FILE = "violations.csv"
 ACCIDENT_LOG_FILE = "accidents.csv"
+PLATE_REGISTRY_FILE = "plates.txt"
+PLATE_REGISTRY_FLUSH_INTERVAL_SECONDS = 1.0
 ANALYTICS_UPDATE_INTERVAL = 300  # seconds (5 minutes)
 
 # Event types
@@ -328,6 +424,12 @@ SHOW_VEHICLE_IDS = True
 SHOW_LANE_REGIONS = True
 SHOW_VIOLATIONS = True
 
+# Temporary OCR debug window (shows real cropped patch per vehicle)
+LP_DEBUG_SHOW_OCR_PATCH = False
+LP_DEBUG_WINDOW_NAME = "LP OCR Debug"
+LP_DEBUG_PATCH_W = 240
+LP_DEBUG_PATCH_H = 120
+
 # FPS display smoothing
 FPS_EMA_ALPHA = 0.15
 
@@ -339,7 +441,8 @@ COLOR_LANE4 = (255, 255, 0)    # Cyan
 COLOR_ACCIDENT = (0, 0, 255)   # Red
 COLOR_VIOLATION = (0, 165, 255)  # Orange
 COLOR_VEHICLE = (255, 255, 255)  # White
-COLOR_LICENSE_PLATE = (0, 255, 255)  # Yellow
+COLOR_LICENSE_PLATE = (0, 255, 255)  # Yellow (text label)
+COLOR_LICENSE_PLATE_BBOX = (0, 255, 0)  # Green (dedicated OCR bbox)
 
 # Analytics
 ANALYTICS_TIME_WINDOWS = {

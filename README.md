@@ -133,6 +133,13 @@ cd USAD-Model
 python main.py
 ```
 
+### OCR Smoke Test
+Run this quick check to confirm license-plate OCR is active and can read synthetic plate probes:
+```bash
+cd USAD-Model
+python ocr_smoke_test.py
+```
+
 ### Keyboard Controls
 - **Q** or **ESC**: Quit application
 - **R**: Reset system (clear all tracked vehicles and events)
