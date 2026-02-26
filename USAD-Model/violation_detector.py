@@ -32,12 +32,14 @@ class Violation:
         
     def get_description(self) -> str:
         """Get violation description"""
+        plate = self.license_plate or getattr(self.vehicle, "license_plate", None) or "UNKNOWN-PLATE"
+        lane = self.lane or "UNKNOWN-LANE"
         descriptions = {
-            "RED_LIGHT_VIOLATION": f"Vehicle {self.vehicle.id} ran red light in {self.lane}",
-            "YELLOW_ABUSE": f"Vehicle {self.vehicle.id} sped through yellow light in {self.lane}",
-            "ILLEGAL_TURN": f"Vehicle {self.vehicle.id} made illegal turn in {self.lane}"
+            "RED_LIGHT_VIOLATION": f"{lane} car {plate} committed RED LIGHT VIOLATION",
+            "YELLOW_ABUSE": f"{lane} car {plate} committed YELLOW LIGHT ABUSE",
+            "ILLEGAL_TURN": f"{lane} car {plate} committed ILLEGAL TURN"
         }
-        return descriptions.get(self.type, f"Unknown violation in {self.lane}")
+        return descriptions.get(self.type, f"{lane} car {plate} committed UNKNOWN VIOLATION")
     
     def to_dict(self) -> dict:
         """Convert to dictionary for logging"""
@@ -349,14 +351,26 @@ class ViolationDetector:
             color = config.COLOR_VIOLATION
             
             cv2.drawMarker(frame, (x, y), color, cv2.MARKER_STAR, 20, 2)
-            
-            label = "VIOLATION"
+
+            plate = str(violation.license_plate or getattr(violation.vehicle, "license_plate", None) or "N/A")
+            lane = str(violation.lane or "N/A")
+            label = violation.type.replace("_", " ")
+            detail = f"{lane} | {plate}"
             cv2.putText(
                 frame,
                 label,
                 (x - 80, y - 40),
                 cv2.FONT_HERSHEY_SIMPLEX,
                 0.55,
+                color,
+                2,
+            )
+            cv2.putText(
+                frame,
+                detail,
+                (x - 80, y - 18),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.5,
                 color,
                 2,
             )

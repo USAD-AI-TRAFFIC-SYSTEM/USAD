@@ -14,11 +14,18 @@ class EventLogger:
     """Logs traffic events and generates analytics"""
     
     def __init__(self):
-        os.makedirs(config.LOG_DIRECTORY, exist_ok=True)
-        
-        self.event_log_path = os.path.join(config.LOG_DIRECTORY, config.EVENT_LOG_FILE)
-        self.violation_log_path = os.path.join(config.LOG_DIRECTORY, config.VIOLATION_LOG_FILE)
-        self.accident_log_path = os.path.join(config.LOG_DIRECTORY, config.ACCIDENT_LOG_FILE)
+        configured_dir = str(getattr(config, "LOG_DIRECTORY", "logs") or "logs")
+        if os.path.isabs(configured_dir):
+            self.log_directory = configured_dir
+        else:
+            base_dir = os.path.dirname(os.path.abspath(__file__))
+            self.log_directory = os.path.join(base_dir, configured_dir)
+
+        os.makedirs(self.log_directory, exist_ok=True)
+
+        self.event_log_path = os.path.join(self.log_directory, config.EVENT_LOG_FILE)
+        self.violation_log_path = os.path.join(self.log_directory, config.VIOLATION_LOG_FILE)
+        self.accident_log_path = os.path.join(self.log_directory, config.ACCIDENT_LOG_FILE)
         
         self._initialize_log_files()
         
@@ -265,7 +272,7 @@ class EventLogger:
     
     def generate_report(self, output_file: str = 'analytics_report.txt'):
         """Generate a comprehensive analytics report"""
-        report_path = os.path.join(config.LOG_DIRECTORY, output_file)
+        report_path = os.path.join(self.log_directory, output_file)
         
         # Get analytics
         violation_analytics = self.get_violation_analytics()
@@ -334,7 +341,7 @@ if __name__ == "__main__":
     print("Testing Event Logger...")
     
     logger = EventLogger()
-    print(f"✓ Log files initialized in: {config.LOG_DIRECTORY}")
+    print(f"✓ Log files initialized in: {logger.log_directory}")
     
     # Test analytics
     v_analytics = logger.get_violation_analytics()

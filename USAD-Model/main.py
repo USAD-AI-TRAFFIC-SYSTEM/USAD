@@ -7,7 +7,7 @@ import sys
 import os
 import importlib
 import threading
-from typing import Optional, Tuple
+from typing import Optional, Tuple, List, Dict
 import config
 from traffic_controller import TrafficController
 from vehicle_detector import VehicleDetector
@@ -124,6 +124,105 @@ class USAD:
         # License plate OCR throttling (keeps EasyOCR from stalling frames)
         self._lp_last_attempt_ts = {}
         self._lp_frame_index = 0
+
+        # Plate memory: keeps recent OCR results tied to nearby tracks so labels
+        # don't disappear during brief tracking/ID instability while moving.
+        self._plate_memory: List[Dict] = []
+
+    @staticmethod
+    def _bbox_iou(b1, b2) -> float:
+        try:
+            x1, y1, w1, h1 = [int(round(float(v))) for v in b1]
+            x2, y2, w2, h2 = [int(round(float(v))) for v in b2]
+        except Exception:
+            return 0.0
+
+        ax1, ay1, ax2, ay2 = x1, y1, x1 + max(1, w1), y1 + max(1, h1)
+        bx1, by1, bx2, by2 = x2, y2, x2 + max(1, w2), y2 + max(1, h2)
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+        inter = float(iw * ih)
+        if inter <= 0:
+            return 0.0
+        union = float((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1)) - inter
+        return inter / union if union > 0 else 0.0
+
+    def _prune_plate_memory(self, now_ts: float):
+        ttl = float(getattr(config, "LP_MEMORY_TTL_SECONDS", 3.0) or 3.0)
+        ttl = max(0.2, min(15.0, ttl))
+        self._plate_memory = [m for m in self._plate_memory if (now_ts - float(m.get("ts", 0.0))) <= ttl]
+
+    def _remember_vehicle_plate(self, vehicle, now_ts: float):
+        text = str(getattr(vehicle, "license_plate", "") or "").strip()
+        if not text:
+            return
+
+        conf = float(getattr(vehicle, "license_plate_confidence", 0.0) or 0.0)
+        bbox = tuple(int(round(float(v))) for v in getattr(vehicle, "bbox", (0, 0, 0, 0)))
+
+        best_idx = -1
+        best_score = -1.0
+        for idx, m in enumerate(self._plate_memory):
+            mb = m.get("bbox")
+            score = self._bbox_iou(bbox, mb)
+            if text == str(m.get("text", "")):
+                score += 0.25
+            if score > best_score:
+                best_score = score
+                best_idx = idx
+
+        entry = {
+            "text": text,
+            "conf": conf,
+            "bbox": bbox,
+            "ts": float(now_ts),
+        }
+
+        if best_idx >= 0 and best_score >= 0.10:
+            prev = self._plate_memory[best_idx]
+            if conf < float(prev.get("conf", 0.0) or 0.0):
+                entry["conf"] = float(prev.get("conf", 0.0) or 0.0)
+            self._plate_memory[best_idx] = entry
+        else:
+            self._plate_memory.append(entry)
+
+    def _apply_plate_memory(self, vehicles, now_ts: float):
+        if not self._plate_memory:
+            return
+
+        min_iou = float(getattr(config, "LP_MEMORY_MATCH_IOU", 0.10) or 0.10)
+        min_iou = max(0.0, min(0.8, min_iou))
+        max_center_px = float(getattr(config, "LP_MEMORY_MATCH_CENTER_PX", 90.0) or 90.0)
+        max_center_px = max(10.0, min(400.0, max_center_px))
+
+        for vehicle in vehicles:
+            if getattr(vehicle, "license_plate", None):
+                continue
+
+            vb = tuple(int(round(float(v))) for v in getattr(vehicle, "bbox", (0, 0, 0, 0)))
+            vc = np.array(getattr(vehicle, "center", (0, 0)), dtype=np.float32)
+
+            best = None
+            best_score = -1.0
+            for m in self._plate_memory:
+                mb = m.get("bbox")
+                iou = self._bbox_iou(vb, mb)
+                mx, my, mw, mh = [int(round(float(v))) for v in mb]
+                mc = np.array((mx + mw / 2.0, my + mh / 2.0), dtype=np.float32)
+                dist = float(np.linalg.norm(vc - mc))
+                if iou < min_iou and dist > max_center_px:
+                    continue
+
+                score = (iou * 2.0) + max(0.0, (max_center_px - dist) / max_center_px)
+                if score > best_score:
+                    best_score = score
+                    best = m
+
+            if best is not None:
+                vehicle.license_plate = str(best.get("text", "") or "")
+                vehicle.license_plate_confidence = float(best.get("conf", 0.0) or 0.0)
+                setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
         
     def initialize_camera(self) -> bool:
         """Initialize camera or video source"""
@@ -236,16 +335,6 @@ class USAD:
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        # Detect violations (skip when in idle mode)
-        if self._no_car_idle_mode:
-            new_violations = []
-        else:
-            new_violations = self.violation_detector.detect_violations(vehicles)
-        
-        # Log new violations
-        for violation in new_violations:
-            self.event_logger.log_violation(violation)
-        
         # License plate detection
         if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
             # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
@@ -253,20 +342,29 @@ class USAD:
             every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
             max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
             cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
+            reocr_hold = float(getattr(config, "LP_REOCR_HOLD_SECONDS", 1.0) or 1.0)
             if every_n <= 0:
                 every_n = 1
             if max_per_frame < 0:
                 max_per_frame = 0
 
+            now_ts = time.time()
+            self._prune_plate_memory(now_ts)
+            self._apply_plate_memory(vehicles, now_ts)
+
             if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
-                now_ts = time.time()
                 attempts = 0
                 for vehicle in vehicles:
                     if vehicle.license_plate:
-                        continue
+                        last_seen = float(getattr(vehicle, "_lp_last_seen_ts", 0.0) or 0.0)
+                        if reocr_hold > 0 and (now_ts - last_seen) < reocr_hold:
+                            self._remember_vehicle_plate(vehicle, now_ts)
+                            continue
 
                     last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
                     if cooldown > 0 and (now_ts - last_ts) < cooldown:
+                        if vehicle.license_plate:
+                            self._remember_vehicle_plate(vehicle, now_ts)
                         continue
 
                     self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
@@ -275,10 +373,55 @@ class USAD:
                         plate_text, confidence, plate_bbox = result
                         vehicle.license_plate = plate_text
                         vehicle.license_plate_confidence = confidence
+                        setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
+                        setattr(vehicle, "license_plate_bbox", tuple(int(round(float(v))) for v in plate_bbox))
+                        self._remember_vehicle_plate(vehicle, now_ts)
 
                     attempts += 1
                     if attempts >= max_per_frame:
                         break
+
+            for vehicle in vehicles:
+                if vehicle.license_plate:
+                    if not hasattr(vehicle, "_lp_last_seen_ts"):
+                        setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
+                    self._remember_vehicle_plate(vehicle, now_ts)
+
+        # Detect violations AFTER LP update so violation snapshots include plate when possible.
+        if self._no_car_idle_mode:
+            new_violations = []
+        else:
+            new_violations = self.violation_detector.detect_violations(vehicles)
+
+        # Best-effort OCR for violations that still have no plate at event time.
+        if new_violations and config.ENABLE_LICENSE_PLATE_DETECTION:
+            for violation in new_violations:
+                if getattr(violation, "license_plate", None):
+                    continue
+                vehicle = getattr(violation, "vehicle", None)
+                if vehicle is None:
+                    continue
+                if getattr(vehicle, "license_plate", None):
+                    violation.license_plate = vehicle.license_plate
+                    continue
+                result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
+                if result:
+                    plate_text, confidence, _ = result
+                    vehicle.license_plate = plate_text
+                    vehicle.license_plate_confidence = confidence
+                    violation.license_plate = plate_text
+
+        # Log new violations
+        for violation in new_violations:
+            lane = str(getattr(violation, "lane", None) or "UNKNOWN-LANE")
+            plate = str(
+                getattr(violation, "license_plate", None)
+                or getattr(getattr(violation, "vehicle", None), "license_plate", None)
+                or "UNKNOWN-PLATE"
+            )
+            vtype = str(getattr(violation, "type", "UNKNOWN")).replace("_", " ")
+            print(f"[VIOLATION] {lane} | {plate} | {vtype}")
+            self.event_logger.log_violation(violation)
         
         # Intelligent traffic control
         self.update_traffic_control(lane_counts_for_control, accidents)

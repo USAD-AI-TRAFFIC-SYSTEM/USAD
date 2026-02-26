@@ -1858,7 +1858,6 @@ class VehicleDetector:
             ]
 
             if any(cv2.pointPolygonTest(inter_region, p, False) >= 0 for p in pts):
-                vehicle.current_lane = "INTERSECTION"
                 vehicles_in_zone.append(vehicle)
 
         return vehicles_in_zone

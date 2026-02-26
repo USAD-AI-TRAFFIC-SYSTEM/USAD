@@ -9,7 +9,7 @@ ARDUINO_TIMEOUT = 1
 CAMERA_SOURCE = 0
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
-CAMERA_FPS = 30
+CAMERA_FPS = 20
 
 # Lanes (polygons in 1280x720 coordinates)
 LANES = {
@@ -373,9 +373,17 @@ LP_TEMPLATE_MIN_CHAR_SCORE = 0.45
 LP_TEMPLATE_OCR_ROTATIONS = [0, 90, 180, 270]
 
 # License plate OCR throttling (EasyOCR can be expensive)
-LP_DETECT_EVERY_N_FRAMES = 10
+LP_DETECT_EVERY_N_FRAMES = 4
 LP_MAX_VEHICLES_PER_FRAME = 1
-LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.5
+LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.35
+
+# Keep plate text stable across brief tracking/ID jitter while vehicle is moving.
+LP_MEMORY_TTL_SECONDS = 4.0
+LP_MEMORY_MATCH_IOU = 0.10
+LP_MEMORY_MATCH_CENTER_PX = 90.0
+
+# If a track already has a plate, wait this long before forcing another OCR pass.
+LP_REOCR_HOLD_SECONDS = 1.5
 
 # Event-time best-effort OCR caps (accidents/violations). Keep low to avoid lag.
 LP_EVENT_MAX_VEHICLES_PER_ACCIDENT = 2
