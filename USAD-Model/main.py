@@ -152,7 +152,7 @@ class USAD:
             cap = cv2.VideoCapture(source, backend)
             if cap is not None and cap.isOpened():
                 self.cap = cap
-                print(f"[Camera] ✓ Opened source {source} using {name}")
+                print(f"[Camera] OK Opened source {source} using {name}")
                 break
 
         if self.cap is None or not self.cap.isOpened():
@@ -177,7 +177,7 @@ class USAD:
                     return False
                 time.sleep(0.1)
         
-        print(f"[Camera] ✓ Initialized ({config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT} @ {config.CAMERA_FPS}fps)")
+        print(f"[Camera] OK Initialized ({config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT} @ {config.CAMERA_FPS}fps)")
         return True
     
     def initialize_arduino(self) -> bool:
@@ -185,16 +185,16 @@ class USAD:
         print("\n[Arduino] Connecting to COM4...")
         
         if self.traffic_controller.connect():
-            print(f"[Arduino] ✓ Connected on {config.ARDUINO_PORT}")
+            print(f"[Arduino] OK Connected on {config.ARDUINO_PORT}")
             
             # Start in auto mode if configured
             if config.AUTO_MODE_DEFAULT:
                 self.traffic_controller.set_auto_mode()
-                print("[Arduino] ✓ Auto mode enabled")
+                print("[Arduino] Auto mode enabled")
             
             return True
         else:
-            print("[Arduino] ✗ Failed to connect")
+            print("[Arduino] Failed to connect")
             print("[Arduino] System will run in simulation mode")
             return False
     

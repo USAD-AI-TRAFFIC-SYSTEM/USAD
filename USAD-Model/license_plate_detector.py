@@ -10,27 +10,26 @@ import pytesseract
 import os
 import threading
 import queue
+import logging
 from dataclasses import dataclass
 from collections import deque
-import logging
-
-# Logger for license plate module
-_logger = logging.getLogger("license_plate_detector")
-try:
-    # Allow config to control logging level if present
-    lvl = getattr(config, "LP_LOG_LEVEL", None)
-    if isinstance(lvl, str):
-        _logger.setLevel(getattr(logging, lvl.upper(), logging.DEBUG))
-    else:
-        _logger.setLevel(logging.DEBUG if getattr(config, "LP_DEBUG", False) else logging.INFO)
-except Exception:
-    _logger.setLevel(logging.DEBUG)
-if not _logger.handlers:
-    ch = logging.StreamHandler()
-    ch.setFormatter(logging.Formatter("[LP] %(asctime)s %(levelname)s: %(message)s"))
-    _logger.addHandler(ch)
 
 pytesseract.pytesseract.tesseract_cmd = r"C:\Program Files\Tesseract-OCR\tesseract.exe"
+
+# Module logger: provides detailed debug output to the terminal for troubleshooting
+logger = logging.getLogger(__name__)
+try:
+    level_name = getattr(config, "LP_DEBUG_LEVEL", "DEBUG")
+    level = getattr(logging, level_name)
+except Exception:
+    level = logging.DEBUG
+logger.setLevel(level)
+if not logger.handlers:
+    ch = logging.StreamHandler()
+    ch.setLevel(level)
+    fmt = logging.Formatter("%(asctime)s %(levelname)s [%(name)s] %(message)s")
+    ch.setFormatter(fmt)
+    logger.addHandler(ch)
 
 try:
     import easyocr
@@ -38,6 +37,7 @@ try:
 except ImportError:
     OCR_AVAILABLE = False
     print("Warning: easyocr not installed. Falling back to template OCR if enabled.")
+    logger.warning("easyocr not installed; falling back to template/Tesseract if enabled")
 
 try:
     import pytesseract
@@ -46,6 +46,8 @@ try:
     TESS_AVAILABLE = True
 except ImportError:
     TESS_AVAILABLE = False
+
+logger.info(f"OCR availability: easyocr={OCR_AVAILABLE}, tesseract_support={TESS_AVAILABLE}")
 
 
 _PLATE_RE = re.compile(r"^[A-Z]{3}[0-9]{3}$")
@@ -201,6 +203,8 @@ class PlateTemporalTracker:
         except Exception:
             return None
 
+        logger.debug(f"update_plate_for_vehicle start vid={vehicle_id} frame_index={frame_index} ocr_available={self.ocr_available}")
+
         plate = _normalize_plate_text(plate_text)
         if not _is_valid_plate(plate):
             return None
@@ -225,6 +229,8 @@ class PlateTemporalTracker:
         entry["score"] = float(entry.get("score", 0.0) or 0.0) + conf
         entry["count"] = int(entry.get("count", 0) or 0) + 1
         entry["last_ts"] = now
+
+        logger.debug(f"PlateTemporalTracker.update vid={vid} plate={plate} conf={conf:.1f} entry_count={entry['count']} entry_score={entry['score']:.1f}")
 
         min_obs = int(getattr(config, "LP_STABLE_MIN_OBSERVATIONS", 3) or 3)
         min_ratio = float(getattr(config, "LP_STABLE_MIN_RATIO", 0.60) or 0.60)
@@ -253,8 +259,10 @@ class PlateTemporalTracker:
             prior = self._confirmed.get(vid)
             self._confirmed[vid] = best_plate
             if prior != best_plate:
-                _logger.info(f"PlateTemporalTracker: confirmed vid={vid} plate={best_plate} score={best_score:.1f} count={best_count} ratio={ratio:.2f}")
+                logger.info(f"PlateTemporalTracker.confirmed vid={vid} plate={best_plate} score={best_score:.1f} count={best_count} ratio={ratio:.2f}")
                 return best_plate
+            else:
+                logger.debug(f"PlateTemporalTracker.confirmation already known vid={vid} plate={best_plate}")
         return None
 
     def cleanup(self, active_vehicle_ids: Optional[set] = None, now: Optional[float] = None):
@@ -270,6 +278,7 @@ class PlateTemporalTracker:
             else:
                 stale = (t - last) > ttl
             if stale:
+                logger.debug(f"PlateTemporalTracker.cleanup removing vid={vid}")
                 self._votes.pop(int(vid), None)
                 self._confirmed.pop(int(vid), None)
                 self._last_seen_ts.pop(int(vid), None)
@@ -311,7 +320,9 @@ class PlateBBoxTracker:
             self._bbox_ema[vid] = (alpha * new) + ((1.0 - alpha) * prior)
 
         out = self._bbox_ema[vid]
-        return (int(round(float(out[0]))), int(round(float(out[1]))), int(round(float(out[2]))), int(round(float(out[3]))))
+        bbox_out = (int(round(float(out[0]))), int(round(float(out[1]))), int(round(float(out[2]))), int(round(float(out[3]))))
+        logger.debug(f"PlateBBoxTracker.update vid={vid} bbox={bbox_out} alpha={alpha}")
+        return bbox_out
 
     def get(self, vehicle_id: int) -> Optional[Tuple[int, int, int, int]]:
         try:
@@ -336,6 +347,7 @@ class PlateBBoxTracker:
             else:
                 stale = (t - last) > ttl
             if stale:
+                logger.debug(f"PlateBBoxTracker.cleanup removing vid={vid}")
                 self._bbox_ema.pop(int(vid), None)
                 self._last_seen_ts.pop(int(vid), None)
 @dataclass
@@ -366,11 +378,14 @@ class _AsyncOCRWorker:
             return False
 
     def _run(self):
+        logger.debug("AsyncOCRWorker thread started")
         while True:
             job = None
             try:
                 job = self._queue.get()
+                logger.debug(f"AsyncOCRWorker: fetched job={job[0] if job is not None else None}")
             except Exception:
+                logger.exception("AsyncOCRWorker: error getting job")
                 continue
             if job is None:
                 return
@@ -378,6 +393,7 @@ class _AsyncOCRWorker:
                 self._detector._process_ocr_job(job)
             except Exception:
                 # Never crash the worker.
+                logger.exception("AsyncOCRWorker: exception while processing job")
                 pass
             finally:
                 try:
@@ -471,8 +487,9 @@ class LicensePlateDetector:
         else:
             self.ocr_mode = "disabled"
 
-        _logger.info(
-            f"LicensePlateDetector init: ocr_mode={self.ocr_mode} easyocr={self.easyocr_available} tesseract={self.tesseract_available} template_enabled={bool(self._templates)} template_size={self._template_size}"
+        logger.info(
+            f"LicensePlateDetector init: ocr_available={self.ocr_available} ocr_mode={self.ocr_mode} "
+            f"easyocr_reader={'yes' if self.reader is not None else 'no'} tesseract={self.tesseract_available} template_enabled={bool(self._templates)}"
         )
 
         # Start async worker if enabled.
@@ -591,7 +608,7 @@ class LicensePlateDetector:
         if completed is not None:
             plate_text, conf, bbox, _finished_ts = completed
 
-            _logger.info(f"OCR completed for vid={vid}: plate={plate_text} conf={conf} bbox={bbox}")
+            logger.debug(f"update_plate_for_vehicle: OCR completed for vid={vid} plate={plate_text} conf={conf}")
 
             # If OCR is confident, confirm immediately; otherwise rely on the existing temporal tracker.
             confirm_conf = float(getattr(config, "LP_OCR_CACHE_MIN_CONF", 70.0) or 70.0)
@@ -599,13 +616,11 @@ class LicensePlateDetector:
             if float(conf) >= confirm_conf:
                 try:
                     self.tracker.force_confirm(int(vid), str(plate_text))
-                    _logger.debug(f"Force-confirmed vid={vid} plate={plate_text} conf={conf}")
                 except Exception:
                     pass
             else:
                 try:
                     self.tracker.update(int(vid), str(plate_text), float(conf), ts=t_now)
-                    _logger.debug(f"Tracker update vid={vid} plate={plate_text} conf={conf}")
                 except Exception:
                     pass
 
@@ -629,7 +644,6 @@ class LicensePlateDetector:
                 bbox_out = self.bbox_tracker.get(int(vid)) or cached_bbox
             except Exception:
                 bbox_out = cached_bbox
-            _logger.debug(f"Returning confirmed plate for vid={vid}: {confirmed} conf={cached_conf}")
             return (str(confirmed), float(cached_conf or 0.0), bbox_out or (0, 0, 1, 1))
 
         confirm_conf = float(getattr(config, "LP_OCR_CACHE_MIN_CONF", 70.0) or 70.0)
@@ -640,7 +654,6 @@ class LicensePlateDetector:
                 bbox_out = self.bbox_tracker.get(int(vid)) or cached_bbox
             except Exception:
                 bbox_out = cached_bbox
-            _logger.debug(f"Returning cached plate for vid={vid}: {cached_plate} conf={cached_conf}")
             return (str(cached_plate), float(cached_conf), bbox_out or (0, 0, 1, 1))
 
         # Detect plate candidate bbox (NO OCR) in small ROIs.
@@ -652,7 +665,7 @@ class LicensePlateDetector:
                 if st is not None:
                     st.consecutive_hits = 0
                     st.last_frame_index = int(frame_index)
-            _logger.debug(f"No plate candidate for vid={vid} vehicle_bbox={vehicle_bbox}")
+            logger.debug(f"update_plate_for_vehicle: no plate candidate found vid={vid}")
             return None
 
         plate_bbox, plate_patch = candidate
@@ -667,7 +680,6 @@ class LicensePlateDetector:
                 )
             except Exception:
                 pass
-        _logger.debug(f"VID={vid} candidate bbox={plate_bbox} patch_shape={getattr(plate_patch,'shape',None)}")
 
         # Update consecutive detection streak.
         with self._lock:
@@ -710,23 +722,17 @@ class LicensePlateDetector:
             if st is None:
                 return None
             if st.in_flight:
-                _logger.debug(f"Skipping submit: vid={vid} already in flight")
-                return None
-            if st.in_flight:
                 return None
             if int(st.consecutive_hits) < int(required):
-                _logger.debug(f"Skipping submit: vid={vid} consecutive_hits={st.consecutive_hits} required={required}")
                 return None
             if (int(frame_index) - int(st.last_submit_frame_index)) < int(ocr_every_n):
                 return None
 
         # Global OCR rate limiting (calls/sec).
         if not self._can_submit_ocr(t_now):
-            _logger.debug(f"Rate limited: vid={vid}")
             return None
 
         if self._worker is None:
-            _logger.debug(f"No OCR worker available for vid={vid}")
             return None
 
         # Submit async OCR job.
@@ -740,9 +746,7 @@ class LicensePlateDetector:
             submitted = self._worker.submit((int(vid), plate_patch, tuple(int(x) for x in plate_bbox), float(t_now)))
             if not submitted:
                 st.in_flight = False
-                _logger.warning(f"Failed to submit OCR job for vid={vid}")
-            else:
-                _logger.debug(f"Submitted OCR job for vid={vid} bbox={plate_bbox} frame_index={frame_index}")
+            logger.debug(f"update_plate_for_vehicle: submitted OCR job vid={vid} submitted={submitted}")
 
         return None
 
@@ -792,7 +796,7 @@ class LicensePlateDetector:
         except Exception:
             return
 
-        _logger.debug(f"_process_ocr_job start vid={vid} bbox={bbox} submit_ts={submit_ts}")
+        logger.debug(f"_process_ocr_job start vid={vid} submit_ts={submit_ts}")
 
         plate_text = None
         conf = 0.0
@@ -801,14 +805,14 @@ class LicensePlateDetector:
         except Exception:
             plate_text, conf = (None, 0.0)
 
-        _logger.debug(f"_process_ocr_job result vid={vid} plate={plate_text} conf={conf}")
-
         elapsed = float(time.time() - t0)
         timeout_s = float(getattr(config, "LP_OCR_TIMEOUT_SECONDS", 0.60) or 0.60)
         timeout_s = max(0.05, min(5.0, timeout_s))
         if elapsed > timeout_s:
             plate_text = None
             conf = 0.0
+
+        logger.debug(f"_process_ocr_job done vid={vid} elapsed={elapsed:.3f}s plate={plate_text} conf={conf}")
 
         plate_text = _normalize_plate_text(plate_text or "")
         if not _is_valid_plate(plate_text):
@@ -822,9 +826,7 @@ class LicensePlateDetector:
 
             if plate_text:
                 self._ocr_results[int(vid)] = (str(plate_text), float(conf), bbox, float(time.time()))
-                _logger.info(f"OCR job published for vid={vid} plate={plate_text} conf={conf}")
-            else:
-                _logger.debug(f"OCR job produced no valid plate for vid={vid}")
+                logger.debug(f"_process_ocr_job stored result vid={vid} plate={plate_text} conf={conf}")
 
     def _run_ocr_on_plate_patch(self, patch: np.ndarray) -> Tuple[Optional[str], float]:
         """Preprocess and OCR a plate patch. Never called on full frame."""
@@ -934,6 +936,7 @@ class LicensePlateDetector:
             except Exception:
                 return None
             gb = (int(ox + bx), int(oy + by), int(bw), int(bh))
+            logger.debug(f"_detect_plate_candidate_bbox_and_patch: found candidate global_bbox={gb}")
             return (gb, patch)
 
         # 1) Prefer placeholder ROI above/roof.
@@ -1501,7 +1504,6 @@ class LicensePlateDetector:
         # When EasyOCR isn't available, prefer template OCR first (fast, OpenCV-only),
         # then fall back to Tesseract (slower) if enabled/available.
         if self.reader is None:
-            _logger.debug(f"_perform_ocr: EasyOCR not available; prefer_template={prefer_template} template_enabled={self._template_enabled}")
             tmpl_plate: Optional[str] = None
             tmpl_conf: float = 0.0
             prefer_template = bool(getattr(config, "LP_PREFER_TEMPLATE_OCR", True)) and (not _is_permissive_alnum_mode())
@@ -1524,7 +1526,6 @@ class LicensePlateDetector:
                 try:
                     t_plate, t_conf = self._perform_tesseract_ocr(image)
                     if t_plate:
-                        _logger.debug(f"_perform_ocr: tesseract returned plate={t_plate} conf={t_conf}")
                         return t_plate, float(t_conf)
                 except Exception:
                     pass
@@ -1554,8 +1555,9 @@ class LicensePlateDetector:
             )
             
             if not results:
-                _logger.debug("_perform_ocr: EasyOCR returned no results")
+                logger.debug("_perform_ocr: EasyOCR returned no results")
                 return None, 0.0
+            logger.debug(f"_perform_ocr: EasyOCR returned {len(results)} results")
 
             # Evaluate single-token and small multi-token combinations.
             best_plate: Optional[str] = None
@@ -1572,7 +1574,7 @@ class LicensePlateDetector:
                     c = 0.0
                 tokens.append((t, c))
 
-            _logger.debug(f"_perform_ocr: EasyOCR tokens={tokens}")
+            logger.debug(f"_perform_ocr: EasyOCR tokens: {tokens}")
 
             if not tokens:
                 return None, 0.0
@@ -1601,9 +1603,10 @@ class LicensePlateDetector:
                         best_conf = float(c)
 
             if not best_plate:
-                _logger.debug("_perform_ocr: no best_plate found after token processing")
+                logger.debug("_perform_ocr: no best_plate found from EasyOCR tokens")
                 return None, 0.0
 
+            logger.debug(f"_perform_ocr: selected best_plate={best_plate} best_conf={best_conf}")
             return best_plate, float(best_conf * 100.0)
             
         except Exception as e:
@@ -1926,6 +1929,6 @@ if __name__ == "__main__":
     
     if OCR_AVAILABLE:
         detector = LicensePlateDetector()
-        print("✓ License plate detector initialized")
+        print("OK License plate detector initialized")
     else:
-        print("✗ Install easyocr: pip install easyocr")
+        print("Install easyocr: pip install easyocr")
