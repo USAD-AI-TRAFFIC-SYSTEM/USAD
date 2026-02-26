@@ -373,9 +373,18 @@ LP_TEMPLATE_MIN_CHAR_SCORE = 0.45
 LP_TEMPLATE_OCR_ROTATIONS = [0, 90, 180, 270]
 
 # License plate OCR throttling (EasyOCR can be expensive)
-LP_DETECT_EVERY_N_FRAMES = 10
-LP_MAX_VEHICLES_PER_FRAME = 1
-LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.5
+LP_DETECT_EVERY_N_FRAMES = 2
+LP_MAX_VEHICLES_PER_FRAME = 2
+LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.15
+
+# Real-time display stabilization: transfer recent plate reads across brief track
+# ID changes using bbox/position matching.
+LP_MEMORY_TTL_SECONDS = 3.0
+LP_MEMORY_MATCH_IOU = 0.10
+LP_MEMORY_MATCH_CENTER_PX = 90.0
+
+# If a track already has a plate, wait this long before forcing another OCR call.
+LP_REOCR_HOLD_SECONDS = 1.0
 
 # Event-time best-effort OCR caps (accidents/violations). Keep low to avoid lag.
 LP_EVENT_MAX_VEHICLES_PER_ACCIDENT = 2
