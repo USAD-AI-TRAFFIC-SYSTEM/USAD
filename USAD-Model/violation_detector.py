@@ -1,4 +1,4 @@
-"""E.Y.E. (Eyeing Your Encounter) - traffic violation detection."""
+"""Traffic violation detection (E.Y.E. module)."""
 
 import cv2
 import numpy as np
@@ -9,7 +9,7 @@ from vehicle_detector import Vehicle
 
 
 class Violation:
-    """Represents a detected traffic violation"""
+    """Represents a detected traffic violation."""
     
     _next_id = 1
     
@@ -31,7 +31,7 @@ class Violation:
         self.license_plate = vehicle.license_plate
         
     def get_description(self) -> str:
-        """Get violation description"""
+        """Return a short description of this violation."""
         plate = self.license_plate or getattr(self.vehicle, "license_plate", None) or "UNKNOWN-PLATE"
         lane = self.lane or "UNKNOWN-LANE"
         descriptions = {
@@ -42,7 +42,7 @@ class Violation:
         return descriptions.get(self.type, f"{lane} car {plate} committed UNKNOWN VIOLATION")
     
     def to_dict(self) -> dict:
-        """Convert to dictionary for logging"""
+        """Convert violation to a dict for logging."""
         return {
             'violation_id': self.id,
             'type': self.type,
@@ -58,7 +58,7 @@ class Violation:
 
 
 class ViolationDetector:
-    """E.Y.E. system for detecting traffic violations"""
+    """Detect traffic violations from tracked vehicles."""
     
     def __init__(self):
         self.violations: List[Violation] = []
@@ -82,15 +82,7 @@ class ViolationDetector:
             self.current_signals[lane] = signal
     
     def detect_violations(self, vehicles: List[Vehicle]) -> List[Violation]:
-        """
-        Detect all types of violations
-        
-        Args:
-            vehicles: List of tracked vehicles
-            
-        Returns:
-            List of detected violations
-        """
+        """Return a list of violations detected in the current frame."""
         new_violations = []
         
         for vehicle in vehicles:
@@ -116,7 +108,7 @@ class ViolationDetector:
         return new_violations
     
     def _detect_red_light_violation(self, vehicle: Vehicle) -> Optional[Violation]:
-        """Detect red light running"""
+        """Detect a red‑light violation for one vehicle."""
         if 'RED_LIGHT' in self.checked_vehicles.get(vehicle.id, set()):
             return None
         
@@ -150,7 +142,7 @@ class ViolationDetector:
         return None
     
     def _detect_yellow_abuse(self, vehicle: Vehicle) -> Optional[Violation]:
-        """Detect speeding through yellow light"""
+        """Detect a yellow‑light abuse violation for one vehicle."""
         if 'YELLOW_ABUSE' in self.checked_vehicles.get(vehicle.id, set()):
             return None
         
@@ -186,7 +178,7 @@ class ViolationDetector:
         return None
     
     def _detect_illegal_turn(self, vehicle: Vehicle) -> Optional[Violation]:
-        """Detect illegal turns based on direction"""
+        """Detect an illegal turn based on movement direction."""
         if not config.ENABLE_ILLEGAL_TURN:
             return None
         if 'ILLEGAL_TURN' in self.checked_vehicles.get(vehicle.id, set()):
@@ -245,10 +237,7 @@ class ViolationDetector:
         return None
     
     def _signed_distance_to_stop_line(self, point: Tuple[float, float], stop_line: List[Tuple[int, int]]) -> float:
-        """Signed perpendicular distance to stop line in pixels.
-
-        Sign is oriented such that positive means "toward the intersection".
-        """
+        """Signed perpendicular distance to stop line in pixels."""
         p = np.array(point, dtype=np.float32)
         p1 = np.array(stop_line[0], dtype=np.float32)
         p2 = np.array(stop_line[1], dtype=np.float32)

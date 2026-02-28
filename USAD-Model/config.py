@@ -101,17 +101,11 @@ CAR_COLOR_RANGES = [
 # Minimum fraction of bbox pixels matching a car color.
 CAR_COLOR_MIN_RATIO = 0.02
 
-# When USE_COLOR_SEGMENTATION is enabled, we usually prevent motion-only blobs from
-# spawning new tracks (to avoid ghosts). A roof-mounted white plate can reduce the
-# color-mask blob enough to miss first-time detections, so allow motion to spawn a
-# new track only if there is still some car-color present in the motion bbox.
 MOTION_NEW_TRACK_MIN_COLOR_RATIO = 0.01
 
 MAX_TRACKING_DISTANCE = 80  # pixels
 MIN_TRACKING_IOU = 0.05
 TRACKING_NEAR_DISTANCE_RATIO = 0.6
-# Track removal: prefer time-based removal for consistent behavior even if FPS dips.
-# Frame-based TTL is kept as a fallback.
 VEHICLE_LOST_FRAMES = 25  # fallback (~<1s at 30fps)
 
 # Remove tracks when they have not been observed for this many seconds.
@@ -125,12 +119,9 @@ MIN_TRACK_CONFIRM_FRAMES = 1
 
 CANDIDATE_VEHICLE_LOST_FRAMES = 8
 
-# Smoothing alpha: higher = more lag but less jitter. During collisions, higher is better.
 # At collision-time, this heavily dampens segmentation mask changes.
 TRACK_SMOOTHING_ALPHA = 0.50
 
-# Extra stabilization when cars are close/touching.
-# These are intentionally conservative: they only kick in when detections are near/overlapping.
 TRACK_CROWD_DISTANCE_PX = 75.0
 TRACK_CROWD_IOU = 0.05
 TRACK_OVERLAP_IOU = 0.08
@@ -148,7 +139,6 @@ TRACK_MATCH_MIN_IOU_WHEN_OVERLAP = 0.06
 TRACK_MATCH_MAX_DIST_WITHOUT_IOU_PX = 10.0
 
 # Stationary lock: freeze bbox when the object isn't moving.
-# Enter lock when per-frame center shift <= ENTER, exit when > EXIT.
 TRACK_STATIONARY_ENTER_PX = 2.0
 TRACK_STATIONARY_EXIT_PX = 6.0
 
@@ -188,7 +178,6 @@ MAX_VEHICLE_EXTENT = 0.95
 
 MIN_VEHICLE_SOLIDITY = 0.88
 
-# Extra filtering to suppress small/non-vehicle blobs.
 # - `FG_MASK_MIN_RATIO` rejects mostly-hollow motion blobs inside the bbox (motion detection).
 # - `NEW_TRACK_MIN_AREA_SCALE` makes it harder for tiny blobs to spawn NEW tracks.
 # - Small-blob strict settings apply tighter extent/solidity thresholds only to small areas.
@@ -257,9 +246,6 @@ COLLISION_CLEAR_SECONDS = 0.0
 
 COLLISION_DUPLICATE_OVERLAP_MAX = 0.40  # lowered: catch same-car duplicate tracks earlier
 
-# Track-level duplicate suppression:
-# Sometimes one physical car produces 2 tracks (two boxes) due to segmentation jitter/blob splits.
-# These thresholds remove co-located duplicates so counts (congestion) stay stable.
 TRACK_DUPLICATE_OVERLAP_MAX = COLLISION_DUPLICATE_OVERLAP_MAX
 TRACK_DUPLICATE_CENTER_DIST_FRAC = 0.35
 
@@ -295,12 +281,9 @@ LP_MAX_HEIGHT = 80
 LP_ASPECT_RATIO_MIN = 1.8
 LP_ASPECT_RATIO_MAX = 8.0  # more flexible for various tape sizes
 
-# Roof-mounted plate constraint: search only the upper portion of the vehicle ROI.
 # Keep these conservative to avoid scanning the entire car (performance).
 LP_VEHICLE_PADDING_PX = 10
 LP_ABOVE_VEHICLE_EXTRA_PX = 25
-# Additional above-search as a fraction of vehicle bbox height.
-# Useful when the plate is mounted above the detected car bbox.
 LP_ABOVE_VEHICLE_EXTRA_RATIO = 0.85
 LP_ROOF_Y_MAX_RATIO = 0.45
 LP_ROOF_X_MARGIN_RATIO = 0.05
@@ -349,16 +332,12 @@ DRAW_LICENSE_PLATE_BBOX = True
 # Temporal stability (avoid flicker): only confirm after consistent multi-frame votes.
 LP_STABLE_MIN_OBSERVATIONS = 2
 LP_STABLE_MIN_RATIO = 0.60
-# With LP_MIN_OCR_CONFIDENCE=35% and 2 observations, the minimum possible score is 70.
-# Keep the score threshold aligned so plates can actually confirm.
 LP_STABLE_MIN_SCORE = 70.0
 LP_TRACK_TTL_SECONDS = 12.0
 
 # Plate bbox smoothing/tracking (display + consistent OCR ROI)
 LP_BBOX_SMOOTHING_ALPHA = 0.35
 
-# Vehicle detection (optional): merge attached white roof-plate pixels into the car blob.
-# Default is OFF to preserve the existing object detection behavior.
 VEHICLE_PLATE_MERGE_ENABLE = False
 VEHICLE_PLATE_MERGE_DILATE_PX = 18
 
@@ -423,9 +402,6 @@ VEHICLE_TYPES = {    "SMALL": (200, 2500),      # Small objects, motorcycle, sma
     "LARGE": (6000, MAX_VEHICLE_AREA)     # Truck, bus
 }
 
-# Restrict detections/tracks to these type labels (set to None/empty to allow all).
-# For the current toy-car setup, we only want the main object size and to ignore
-# fingers/hand movement which usually shows up as SMALL/MEDIUM blobs.
 ALLOWED_VEHICLE_TYPES = ("LARGE",)
 
 # Display

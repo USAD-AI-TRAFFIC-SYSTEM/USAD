@@ -1,10 +1,4 @@
-"""License plate detection + OCR via EasyOCR.
-
-OCR is expensive (~200-500ms per call on CPU). To avoid freezing the main
-video loop, all EasyOCR work is offloaded to a single background worker
-thread via a job queue. The main thread submits jobs and picks up finished
-results — it never blocks waiting for OCR to complete.
-"""
+"""License plate detection and OCR using EasyOCR with a background worker."""
 
 import cv2
 import numpy as np
@@ -24,13 +18,7 @@ except ImportError:
 
 
 class LicensePlateDetector:
-    """Detects and reads license plates from vehicle images.
-
-    OCR runs in a background thread so the main video loop is never blocked.
-    Use submit_async() to queue a job and get_result() to retrieve results.
-    The original blocking detect_license_plate() is kept for compatibility
-    but is no longer called from the main loop.
-    """
+    """Detect and read license plates, offloading OCR to a worker thread."""
 
     def __init__(self):
         self.ocr_available = OCR_AVAILABLE
@@ -44,11 +32,7 @@ class LicensePlateDetector:
                 print(f"Failed to initialize EasyOCR: {e}")
                 self.ocr_available = False
 
-        # ── Async OCR pipeline ────────────────────────────────────────────
-        # _job_queue  : main thread puts (vehicle_id, frame_crop, bbox_info) here
-        # _results    : worker thread writes finished (plate_text, conf, bbox) here
-        # _lock       : protects _results dict
-        # _worker     : daemon thread — dies automatically when the program exits
+        # Async OCR pipeline state
         self._job_queue: queue.Queue = queue.Queue(maxsize=8)
         self._results: Dict[int, Optional[Tuple[str, float, Tuple[int, int, int, int]]]] = {}
         self._lock = threading.Lock()
@@ -71,16 +55,11 @@ class LicensePlateDetector:
         frame: np.ndarray,
         vehicle_bbox: Tuple[int, int, int, int],
     ) -> bool:
-        """Submit an OCR job for vehicle_id.  Returns immediately (non-blocking).
-
-        Returns True if the job was queued, False if the queue is full
-        (meaning the worker is still busy — the caller should skip this frame).
-        """
+        """Queue an OCR job for this vehicle without blocking the main loop."""
         if not self.ocr_available:
             return False
 
-        # Crop the vehicle ROI here on the main thread (cheap operation)
-        # so the worker only receives a small image, not the whole frame.
+        # Crop vehicle ROI here so the worker only sees a small image.
         try:
             x, y, w, h = [int(round(v)) for v in vehicle_bbox]
             padding = 10
@@ -91,7 +70,7 @@ class LicensePlateDetector:
             roi = frame[y1:y2, x1:x2]
             if roi.size == 0:
                 return False
-            # Copy the ROI so the worker holds its own memory
+            # Copy the ROI so the worker owns its memory
             roi = roi.copy()
         except Exception:
             return False
@@ -101,28 +80,24 @@ class LicensePlateDetector:
             self._job_queue.put_nowait(job)
             return True
         except queue.Full:
-            # Queue is full — worker is busy, skip this frame
+            # Queue is full; worker is busy, skip this frame.
             return False
 
     def get_result(
         self, vehicle_id: int
     ) -> Optional[Tuple[str, float, Tuple[int, int, int, int]]]:
-        """Return the latest finished OCR result for vehicle_id, or None.
-
-        The result is consumed (removed) on the first successful read so it
-        does not get re-applied on every subsequent frame.
-        """
+        """Return and consume the latest OCR result for this vehicle, if any."""
         with self._lock:
             return self._results.pop(vehicle_id, None)
 
     def shutdown(self):
-        """Signal the worker thread to stop (call on app exit)."""
+        """Signal the worker thread to stop (on app exit)."""
         self._stop_event.set()
 
     # ── Background worker ─────────────────────────────────────────────────
 
     def _ocr_worker(self):
-        """Runs in a background thread. Consumes jobs and writes results."""
+        """Background loop: consume OCR jobs and store results."""
         while not self._stop_event.is_set():
             try:
                 job = self._job_queue.get(timeout=0.1)

@@ -9,7 +9,7 @@ from vehicle_detector import Vehicle
 
 
 class Accident:
-    """Represents a detected accident"""
+    """Represents a detected accident."""
     
     _next_id = 1
     
@@ -39,8 +39,6 @@ class Accident:
         
     def _determine_lane(self) -> Optional[str]:
         """Determine which lane the accident is in"""
-        # Intersection should take precedence: when an accident occurs in the
-        # middle zone, record it under the intersection/center status.
         try:
             intersection_region = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
             result = cv2.pointPolygonTest(intersection_region, self.location, False)
@@ -58,11 +56,7 @@ class Accident:
         return None
     
     def update(self, *, seen: bool):
-        """Update accident state.
-
-        Confidence should only build when the underlying condition is still observed.
-        This prevents one-frame false positives from becoming "confirmed" later.
-        """
+        """Update accident confidence based on whether it is still seen."""
         if seen:
             self.last_seen_time = time.time()
             self.missed_frames = 0
@@ -74,11 +68,11 @@ class Accident:
             self.missed_frames += 1
     
     def get_duration(self) -> float:
-        """Get how long accident has been detected"""
+        """Return how long the accident has been active."""
         return time.time() - self.detected_time
     
     def get_description(self) -> str:
-        """Get accident description"""
+        """Return a short textual description of the accident."""
         vehicle_ids = [str(v.id) for v in self.vehicles]
         duration = self.get_duration()
         
@@ -91,7 +85,7 @@ class Accident:
 
 
 class AccidentDetector:
-    """Detects accidents using vehicle tracking data"""
+    """Detect accidents from tracked vehicles."""
     
     def __init__(self):
         self.accidents: Dict[int, Accident] = {}
@@ -122,16 +116,8 @@ class AccidentDetector:
         return (str(accident_type), ids)
         
     def detect_accidents(self, vehicles: List[Vehicle], frame: Optional[np.ndarray] = None) -> List[Accident]:
-        """
-        Detect accidents from vehicle list
-        
-        Args:
-            vehicles: List of tracked vehicles
-            
-        Returns:
-            List of active accidents
-        """
-        # Detect stopped vehicles + collisions for this frame (evidence)
+        """Return active accidents detected from the current vehicle list."""
+        # Collect stopped-vehicle and collision evidence for this frame.
         frame_evidence: List[Accident] = []
         frame_evidence.extend(self._detect_stopped_vehicles(vehicles))
         frame_evidence.extend(self._detect_collisions(vehicles, frame=frame))
@@ -161,12 +147,7 @@ class AccidentDetector:
             return float(np.hypot(dx, dy))
 
         def _collision_threshold_px() -> float:
-            """Pixel threshold for considering cars 'close enough' for collision logic.
-
-            If mm-based calibration is configured, we still keep at least the legacy
-            pixel threshold as a safety net. In practice, bbox jitter and segmentation
-            can create a 5–20px gap even when cars are touching.
-            """
+            """Pixel distance threshold for considering cars close enough to collide."""
             legacy = float(getattr(config, "COLLISION_DISTANCE_THRESHOLD", 30))
             mm = float(getattr(config, "COLLISION_DISTANCE_MM", 0.0) or 0.0)
             if mm > 0:
@@ -182,7 +163,7 @@ class AccidentDetector:
         queue_proximity_px = float(getattr(config, "QUEUE_PROXIMITY_PX", 45.0))
         clear_gap_px = max(threshold_px, queue_proximity_px) + 15.0
 
-        # Track first-seen times for gating
+        # Track first-seen times for collision/accident gating.
         for v in vehicles:
             self._vehicle_first_seen.setdefault(int(v.id), now)
 
@@ -192,14 +173,10 @@ class AccidentDetector:
                 if v == accident_id and k != keep_key:
                     self._accident_key_to_id.pop(k, None)
 
-        # Update/create tracked accidents based on evidence.
-        # Use accident IDs for "seen this frame" to avoid resetting/aging when collision
-        # vehicle sets fluctuate (e.g., 2 -> 3 vehicles) while it is still the same event.
+        # Update/create tracked accidents based on current evidence.
         seen_accident_ids: set[int] = set()
 
         for evidence in frame_evidence:
-            # COLLISION: attempt to match to an existing collision accident by overlap,
-            # so duration/ID remains stable even when the involved vehicle set changes.
             if evidence.type == "COLLISION":
                 evidence_ids = {int(v.id) for v in evidence.vehicles}
 
@@ -208,9 +185,6 @@ class AccidentDetector:
                 best_dist = 1e9
                 best_recent = 1e9
                 max_match_dist = float(getattr(config, "COLLISION_MATCH_MAX_DISTANCE_PX", 90.0) or 90.0)
-                # If tracking IDs churn during a real collision, vehicle-id intersection can be 0.
-                # Allow a proximity match to a very recent collision accident to keep a stable
-                # accident ID (prevents duplicate notifications) WITHOUT changing collision rules.
                 max_match_age = float(getattr(config, "COLLISION_MATCH_MAX_AGE_SECONDS", 4.0) or 4.0)
                 max_match_age = max(0.0, min(10.0, max_match_age))
 
@@ -242,16 +216,10 @@ class AccidentDetector:
                 if best_id is not None and best_id in self.accidents:
                     acc = self.accidents[best_id]
                     if best_inter <= 0:
-                        # Fallback match (ID churn): replace the involved set with the
-                        # current evidence set to avoid unbounded union growth.
                         acc.vehicles = list(evidence.vehicles)
                     else:
                         acc_ids = {int(v.id) for v in acc.vehicles}
                         union_ids = sorted(acc_ids.union(evidence_ids))
-                        # Preserve vehicle identity across brief detection dropouts:
-                        # if a vehicle isn't present in the current `vehicles` list (because
-                        # it wasn't detected this frame), keep the prior Vehicle object so
-                        # collision matching/notification does not churn.
                         updated: List[Vehicle] = []
                         for vid in union_ids:
                             vcur = vehicles_by_id.get(int(vid))
@@ -291,8 +259,6 @@ class AccidentDetector:
                 evidence.last_seen_time = now
                 evidence.confidence_frames = 1
 
-                # If the configured confirmation threshold is 1 (common for collisions),
-                # confirm immediately so the UI can alert on the same frame.
                 if (not evidence.confirmed) and (
                     evidence.confidence_frames >= int(getattr(evidence, "_confirm_frames_required", 1))
                 ):
@@ -303,13 +269,6 @@ class AccidentDetector:
                 seen_accident_ids.add(int(evidence.id))
                 _dedupe_keys_for_accident(int(evidence.id), key)
 
-        # Consolidate collision accidents so multi-vehicle pileups are represented
-        # as a single collision event.
-        #
-        # Goals:
-        # - Never have two active COLLISION accidents that share the same vehicle.
-        # - When contact edges flicker, merge nearby/recent collision groups so a
-        #   3+ vehicle pileup doesn't split into multiple accidents.
         def _merge_collision_accidents(keep_id: int, drop_id: int):
             if keep_id == drop_id:
                 return
@@ -447,8 +406,6 @@ class AccidentDetector:
                             return True
                         return False
 
-                    # Merge if overlapping vehicles (should already be handled) OR very close in space/time
-                    # and lane-compatible (avoid merging unrelated collisions from different lanes).
                     if a_vids.intersection(b_vids) or (dist <= (merge_dist * 0.75) and _lane_compatible(a_lane, b_lane)):
                         keep_id = int(min(a_id, b_id))
                         drop_id = int(max(a_id, b_id))
@@ -559,9 +516,6 @@ class AccidentDetector:
             for v in accident.vehicles:
                 self.checked_vehicles.add(v.id)
 
-        # Stability hint for tracking: when a collision is active, segmentation/masks can
-        # jitter a lot (touching cars, merged blobs). Mark involved vehicles so bbox
-        # stabilization can be boosted on subsequent frames.
         stability_seconds = float(getattr(config, "COLLISION_BBOX_STABILIZE_SECONDS", 1.75) or 0.0)
         if stability_seconds > 0:
             until = now + stability_seconds
@@ -808,7 +762,6 @@ class AccidentDetector:
                 if bottom2 < top1:
                     return (overlap_left, bottom2, overlap_right, top1)
 
-            # Diagonal separation: use rectangle between nearest corners
             # Choose x-range between nearest vertical edges
             if right1 < left2:
                 gx1, gx2 = right1, left2
@@ -876,8 +829,6 @@ class AccidentDetector:
         collision_edges: List[Tuple[int, int]] = []
 
         for i, vehicle1 in enumerate(vehicles):
-            # NOTE: do not suppress vehicles already in confirmed accidents here.
-            # Collisions can expand (2 cars -> 3 cars) and we want the group to update.
             
             for vehicle2 in vehicles[i+1:]:
                 
@@ -885,12 +836,6 @@ class AccidentDetector:
                 # Distance between vehicle bodies (bounding boxes)
                 gap_px = bbox_gap_distance_px(vehicle1.bbox, vehicle2.bbox)
 
-                # Suppress "collisions" between two detections that heavily overlap.
-                # This typically means the same physical car was detected twice (e.g.,
-                # blob-splitting spawned two tracks from one car).
-                # We suppress whenever the two tracks are co-located regardless of
-                # whether they are new/confirmed — two confirmed tracks from the same
-                # physical object must not register as a collision.
                 overlap_max = float(getattr(config, "COLLISION_DUPLICATE_OVERLAP_MAX", 0.40))
                 overlap_ratio = _overlap_over_min_area(vehicle1.bbox, vehicle2.bbox)
                 if overlap_ratio >= overlap_max:
@@ -901,8 +846,6 @@ class AccidentDetector:
                     w2, h2 = vehicle2.bbox[2], vehicle2.bbox[3]
                     scale = float(max(1, min(w1, h1, w2, h2)))
 
-                    # Two tracks whose centres are within 35 % of the smaller bbox
-                    # dimension are almost certainly the same physical object.
                     if center_dist <= (0.35 * scale):
                         continue
 
@@ -917,8 +860,6 @@ class AccidentDetector:
                     obj_gap = _object_gap_distance_px(frame, vehicle1.bbox, vehicle2.bbox)
                     used_object_gap = obj_gap is not None
 
-                # HARD contact: trigger immediately for 1–2px gap, without waiting for
-                # the global stabilization delay.
                 hard_contact = False
                 if obj_gap is not None:
                     hard_contact = obj_gap <= object_touch_px
@@ -938,8 +879,6 @@ class AccidentDetector:
 
                 # If we can measure object gap: collision only if objects touch.
                 if obj_gap is not None:
-                    # If we recently had a collision, allow a little extra gap to
-                    # avoid jitter flipping COLLISION -> STOPPED.
                     effective_touch = object_touch_px
                     if sticky_until > now_ts:
                         effective_touch = object_touch_px + max(0.0, release_extra)
@@ -973,24 +912,13 @@ class AccidentDetector:
                     self._queue_close_start.pop(pair_key, None)
 
                     if sticky_until > now_ts:
-                        # If we cannot measure object gap for a moment, keep collision alive briefly
-                        # as long as bboxes are still essentially touching.
                         if gap_px > (bbox_touch_px + max(0.0, release_extra)):
                             continue
 
                     # Without object gap, only accept near-touching bboxes as collision.
                     if gap_px > bbox_touch_px:
                         continue
-
-                # NOTE: bbox-only fallback is intentionally strict (<= ~1–2px).
-
-                # Check if within collision gap threshold
-                # - If we have object gap, it already enforced "touch" above.
-                # - If we don't, we already enforced bbox_touch_px above.
                 if (obj_gap is not None and gap_px <= max(queue_proximity_px, threshold_px)) or (obj_gap is None and gap_px <= bbox_touch_px):
-                    # If both objects are essentially stationary, do not call it a collision.
-                    # This suppresses false positives from static blobs (lane markings, shadows) and
-                    # bumper-to-bumper queued cars.
                     if require_motion:
                         speed1 = float(vehicle1.get_speed())
                         speed2 = float(vehicle2.get_speed())
@@ -1000,8 +928,6 @@ class AccidentDetector:
                             self.stopped_vehicle_last_seen[vehicle2.id] = now
                             continue
 
-                    # If there is a visible black background gap between them, treat as stopped/queued cars
-                    # (not a collision accident).
                     if (
                         (not used_object_gap)
                         and frame is not None

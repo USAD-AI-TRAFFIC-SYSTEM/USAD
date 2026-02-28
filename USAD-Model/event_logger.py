@@ -11,7 +11,7 @@ from accident_detector import Accident
 
 
 class EventLogger:
-    """Logs traffic events and generates analytics"""
+    """Log traffic events and generate simple analytics."""
     
     def __init__(self):
         os.makedirs(config.LOG_DIRECTORY, exist_ok=True)
@@ -26,7 +26,7 @@ class EventLogger:
         self.last_analytics_update = time.time()
         
     def _initialize_log_files(self):
-        """Always overwrite logs with headers at startup (clear previous runs)"""
+        """Overwrite logs with headers at startup (clear previous runs)."""
         with open(self.event_log_path, 'w', newline='') as f:
             writer = csv.writer(f)
             writer.writerow([
@@ -177,15 +177,7 @@ class EventLogger:
         print(f"[PLATE LOG] vehicle_id={vehicle_id} plate={plate_text} conf={confidence:.1f}% at ({location[0]}, {location[1]})")
     
     def get_violation_analytics(self, time_window: Optional[int] = None) -> Dict:
-        """
-        Get violation analytics
-        
-        Args:
-            time_window: Time window in seconds (None for all time)
-            
-        Returns:
-            Dictionary with analytics data
-        """
+        """Return basic violation analytics for the given time window."""
         if not os.path.exists(self.violation_log_path):
             return {}
         
@@ -287,7 +279,7 @@ class EventLogger:
         }
     
     def generate_report(self, output_file: str = 'analytics_report.txt'):
-        """Generate a comprehensive analytics report"""
+        """Generate a text analytics report and return its path."""
         report_path = os.path.join(config.LOG_DIRECTORY, output_file)
         
         # Get analytics
@@ -352,7 +344,7 @@ class EventLogger:
         return report_path
 
 
-# Test function
+# Simple manual test
 if __name__ == "__main__":
     print("Testing Event Logger...")
     

@@ -19,11 +19,7 @@ from emergency_notifier import EmergencyNotifier
 
 
 class LatestFrameGrabber:
-    """Continuously reads from a VideoCapture and exposes the latest frame.
-
-    This avoids UI stutter when processing occasionally spikes by decoupling
-    capture from the processing loop.
-    """
+    """Read latest frame from a VideoCapture in a background thread."""
 
     def __init__(self, cap: cv2.VideoCapture):
         self._cap = cap
@@ -109,9 +105,7 @@ class USAD:
         # Display settings
         self.is_fullscreen = False
 
-        # ── UI mode flag ─────────────────────────────────────────────────
-        # Set to False by app.py to suppress the OpenCV HUD overlay,
-        # since app.py renders all status info in its own CTk panel.
+        # When False, app.py renders the HUD instead of OpenCV.
         self.show_cv_panel = True
 
         # Detection/alert gating

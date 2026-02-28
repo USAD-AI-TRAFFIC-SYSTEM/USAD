@@ -1,14 +1,4 @@
-"""
-USAD Dashboard
---------------
-Standalone analytics dashboard — no camera, no OpenCV.
-Reads CSV/report files from the same directory (or logs/ subfolder).
-
-Run independently:
-    python dashboard.py
-
-Or launched automatically from app.py when the Dashboard tab is clicked.
-"""
+"""USAD analytics dashboard using CSV logs (no camera/OpenCV)."""
 
 import os
 import csv
@@ -18,7 +8,7 @@ from PIL import Image
 import customtkinter as ctk
 from collections import Counter
 
-# ── Paths ──────────────────────────────────────────────────────────────────────
+# Paths
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
 def find_file(name):
@@ -35,7 +25,7 @@ def load_csv(name):
     with open(p, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))
 
-# ── Colors ─────────────────────────────────────────────────────────────────────
+# Colors
 C_BG        = "#ffffff"
 C_PRIMARY   = "#282828"
 C_SECONDARY = "#5a5a5a"
@@ -58,7 +48,7 @@ ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 
-# ── Dashboard App ───────────────────────────────────────────────────────────────
+# Dashboard window
 class DashboardApp(ctk.CTk):
 
     def __init__(self):
@@ -85,7 +75,7 @@ class DashboardApp(ctk.CTk):
         self.grid_rowconfigure(1, weight=1)
         self.grid_columnconfigure(0, weight=1)
 
-        # ── Top bar ──────────────────────────────────────────────────────
+        # Top bar
         top = ctk.CTkFrame(self, fg_color=C_BG, corner_radius=0, height=64)
         top.grid(row=0, column=0, sticky="ew")
         top.grid_propagate(False)
@@ -113,7 +103,7 @@ class DashboardApp(ctk.CTk):
         tab_bar.grid(row=0, column=0, sticky="ew", pady=(105, 0))
         tab_bar.grid_propagate(False)
 
-        # ── Content area ─────────────────────────────────────────────────
+        # Content area
         self._content = ctk.CTkFrame(self, fg_color=C_WIN_BG, corner_radius=0)
         self._content.grid(row=1, column=0, sticky="nsew")
 
@@ -142,9 +132,7 @@ class DashboardApp(ctk.CTk):
         # Build pages
         self._build_overview(self._pages["Overview"])
 
-        # ── Violations table
-        # CSV: timestamp,date,time,hour,violation_type,violation_id,vehicle_id,
-        #      vehicle_type,license_plate,lane,traffic_signal,speed,location_x,location_y
+        # Violations table
         self._build_table(
             self._pages["Violations"], self.violations,
             ["#", "Timestamp", "Type", "Lane", "Vehicle Type", "Plate", "Speed (km/h)", "Signal"],
@@ -161,9 +149,7 @@ class DashboardApp(ctk.CTk):
             accent="#b71c1c"
         )
 
-        # ── Accidents table
-        # CSV: timestamp,date,time,hour,accident_type,accident_id,lane,vehicle_ids,
-        #      vehicle_count,duration,emergency_notified,location_x,location_y
+        # Accidents table
         self._build_table(
             self._pages["Accidents"], self.accidents,
             ["#", "Timestamp", "Type", "Lane", "Vehicle IDs", "Count", "Duration (s)", "Notified"],
@@ -180,9 +166,7 @@ class DashboardApp(ctk.CTk):
             accent="#e65100"
         )
 
-        # ── Traffic Events table
-        # CSV: timestamp,event_type,event_id,lane,vehicle_id,vehicle_type,
-        #      license_plate,description,location
+        # Traffic Events table
         self._build_table(
             self._pages["Traffic Events"], self.traffic,
             ["#", "Timestamp", "Type", "Lane", "Vehicle Type", "Plate", "Description"],
@@ -227,7 +211,7 @@ class DashboardApp(ctk.CTk):
                 b.configure(fg_color=C_BG, text_color=C_SECONDARY,
                             font=("Helvetica", 11), border_width=0)
 
-    # ── Overview page ─────────────────────────────────────────────────────
+    # Overview page
     def _build_overview(self, parent):
         scroll = ctk.CTkScrollableFrame(parent, fg_color=C_WIN_BG,
                                          scrollbar_button_color=C_DIVIDER)
@@ -262,7 +246,7 @@ class DashboardApp(ctk.CTk):
                 fill="x", padx=14, pady=(0, 12))
 
         def draw_donut(parent, data_dict, colors, name_map=None):
-            """Render a hollow pie (donut) chart using tkinter Canvas."""
+            """Render a small donut chart using tkinter Canvas."""
             SIZE  = 200
             CX, CY = SIZE // 2, SIZE // 2
             R_OUT  = 80
@@ -341,7 +325,7 @@ class DashboardApp(ctk.CTk):
                              anchor="e", width=44).pack(side="left")
 
         def bar_chart(parent, data_dict, colors, name_map=None, bar_color=None):
-            """Render a horizontal bar chart from a dict {label: count}."""
+            """Render a horizontal bar chart from {label: count}."""
             max_val = max(data_dict.values()) if data_dict else 1
             frame = ctk.CTkFrame(parent, fg_color=C_BG, corner_radius=10)
             frame.pack(fill="x", padx=20, pady=4)
@@ -361,7 +345,7 @@ class DashboardApp(ctk.CTk):
                 ctk.CTkLabel(row, text=str(cnt), font=("Helvetica", 10, "bold"),
                              text_color=color, width=40, anchor="e").pack(side="left")
 
-        # ── Stat cards ────────────────────────────────────────────────────
+        # Summary cards
         section("Summary")
         r1 = card_row(scroll, 4)
         notified = sum(1 for r in self.accidents
@@ -371,7 +355,7 @@ class DashboardApp(ctk.CTk):
         stat_card(r1, 2, "Traffic Events",    len(self.traffic),     "Combined log",      C_PRIMARY)
         stat_card(r1, 3, "Emergency Alerts",  notified,              "Notifications sent","#6a1b9a")
 
-        # ── Accidents & Violations by lane ────────────────────────────────
+        # Accidents and violations by lane
         section("Accidents & Violations by Lane")
         side_row = ctk.CTkFrame(scroll, fg_color=C_WIN_BG)
         side_row.pack(fill="x", padx=20, pady=4)
@@ -394,16 +378,14 @@ class DashboardApp(ctk.CTk):
         vio_by_lane = Counter(r.get("lane", "UNKNOWN") for r in self.violations)
         draw_donut(vio_panel, dict(vio_by_lane), LANE_COLORS, LANE_NAMES)
 
-        # ── Peak violation hours ──────────────────────────────────────────
-        # Uses 'hour' column from violations CSV
+        # Peak violation hours (uses 'hour' column)
         section("Peak Violation Hours")
         vio_by_hour = Counter(r.get("hour", "") for r in self.violations if r.get("hour"))
         top_hours   = dict(sorted(vio_by_hour.items(), key=lambda x: -x[1])[:8])
         hour_labels = {h: f"{h}:00" for h in top_hours}
         bar_chart(scroll, top_hours, {}, hour_labels, bar_color="#b71c1c")
 
-        # ── Vehicle type breakdown ─────────────────────────────────────────
-        # Uses 'vehicle_type' from traffic_events CSV
+        # Vehicle type breakdown (from traffic_events)
         section("Vehicle Types in Traffic Events")
         vtype = Counter(r.get("vehicle_type", "UNKNOWN") for r in self.traffic)
         vtype_colors = {
@@ -433,8 +415,7 @@ class DashboardApp(ctk.CTk):
             bar.set(cnt / max_v)
             bar.pack(fill="x", padx=12, pady=(4, 12))
 
-        # ── Accident duration stats ────────────────────────────────────────
-        # Uses 'duration' column from accidents CSV
+        # Accident duration stats (from 'duration' column)
         section("Accident Duration Distribution")
         durations = []
         for r in self.accidents:
@@ -457,21 +438,19 @@ class DashboardApp(ctk.CTk):
             }
             bar_chart(scroll, buckets, dur_colors)
 
-        # ── Accident type breakdown ────────────────────────────────────────
-        # Uses 'accident_type' column from accidents CSV
+        # Accident type breakdown
         section("Accident Types")
         acc_types = Counter(r.get("accident_type", "UNKNOWN") for r in self.accidents)
         if acc_types:
             bar_chart(scroll, dict(acc_types), {}, bar_color="#e65100")
 
-        # ── Violation type breakdown ───────────────────────────────────────
-        # Uses 'violation_type' column from violations CSV
+        # Violation type breakdown
         section("Violation Types")
         vio_types = Counter(r.get("violation_type", "UNKNOWN") for r in self.violations)
         if vio_types:
             bar_chart(scroll, dict(vio_types), {}, bar_color="#b71c1c")
 
-    # ── Generic table page ────────────────────────────────────────────────
+    # Generic table page
     def _build_table(self, parent, data, columns, row_fn, accent=C_PRIMARY):
         # Header bar
         header = ctk.CTkFrame(parent, fg_color=C_BG, corner_radius=0, height=52)

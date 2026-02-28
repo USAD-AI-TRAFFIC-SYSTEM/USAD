@@ -5,15 +5,15 @@ import numpy as np
 import customtkinter as ctk
 from PIL import Image
 
-# Import USAD engine from main.py (no side-effects since __name__ != "__main__")
+# Import USAD engine from main.py
 from main import USAD
 import config
 
-# ── App settings ─────────────────────────────────────────────────────────────
-PANEL_W     = 340          # status panel width  (fixed)
-PANEL_H     = 480          # status panel height (fixed)
+# Basic layout settings
+PANEL_W     = 340          # status panel width
+PANEL_H     = 480          # status panel height
 TAB_H       = 36           # tab buttons height above panel
-LOGO_SIZE   = 100          # logo box width & height (square)
+LOGO_SIZE   = 100          # logo box size
 LOGO_PAD    = 10           # gap from window edge
 TICK_MS     = 16           # ~60 fps frame loop interval
 
@@ -21,7 +21,7 @@ ctk.set_appearance_mode("light")
 ctk.set_default_color_theme("blue")
 
 
-# ── Color palette ─────────────────────────────────────────────────────────────
+# Color palette
 C_BG        = "#ffffff"
 C_PRIMARY   = "#282828"
 C_SECONDARY = "#5a5a5a"

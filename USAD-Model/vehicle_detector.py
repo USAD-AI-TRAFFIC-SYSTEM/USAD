@@ -9,7 +9,7 @@ import time
 import config
 
 class Vehicle:
-    """Represents a tracked vehicle"""
+    """Represents a tracked vehicle."""
     
     _next_id = 1
     
@@ -17,8 +17,7 @@ class Vehicle:
         self.id = Vehicle._next_id
         Vehicle._next_id += 1
 
-        # Defensive normalization: upstream code can accidentally pass numpy scalars
-        # or floats (e.g., from smoothing/prediction). Keep storage integer-only.
+        # Normalize center to integer pixel coordinates.
         try:
             cx, cy = center
         except Exception:
@@ -37,24 +36,22 @@ class Vehicle:
         )  # (x, y, w, h)
         self.area = area
 
-        # Track the last *observed* (non-predicted) measurement.
-        # Used to prevent predicted boxes from drifting/flying away when detections
-        # are temporarily missing during overlaps/collisions.
+        # Last observed (non-predicted) measurement.
         self._last_observed_center = tuple(self.center)
         self._last_observed_bbox = tuple(self.bbox)
         self._last_observed_ts = float(time.time())
 
-        # Consecutive frames with no supporting segmentation evidence (used to prune ghosts).
+        # Frames without supporting segmentation evidence.
         self._no_presence_frames = 0
 
         self._smooth_center = np.array(self.center, dtype=np.float32)
         self._smooth_bbox = np.array(self.bbox, dtype=np.float32)
 
-        # Short rolling history used to reduce bbox/center flicker without adding much lag.
+        # Short rolling history to reduce flicker.
         self._bbox_history: deque = deque()
         self._center_history: deque = deque()
         
-        # Use normalized (int) center for history to avoid tiny float jitter.
+        # Store int centers to avoid tiny float jitter.
         self.positions = [tuple(self.center)]
         self.timestamps = [time.time()]
         self.lost_frames = 0
@@ -76,8 +73,7 @@ class Vehicle:
         
         self.violations = []
 
-        # How many consecutive frames this track has been outside the intersection ROI.
-        # Used to prevent ID churn when objects hover near ROI boundaries.
+        # Frames spent outside intersection ROI.
         self.roi_outside_frames = 0
         
     def _classify_vehicle(self, area: float) -> str:
@@ -96,14 +92,7 @@ class Vehicle:
         crowded: bool = False,
         overlapping: bool = False,
     ):
-        """Update vehicle position.
-
-        Args:
-            crowded: True when this detection is near another detection.
-                Used to boost stabilization when cars are close to each other.
-            overlapping: True when this detection overlaps another detection.
-                Used to apply the strongest stabilization (touching cars / merged masks).
-        """
+        """Update vehicle position and smoothed tracking state."""
         def _rolling_median(attr_name: str, value: Tuple[int, ...], window: int) -> Tuple[int, ...]:
             window = int(window or 0)
             if window <= 1:
@@ -123,8 +112,7 @@ class Vehicle:
             med = np.median(arr, axis=0)
             return tuple(int(round(float(x))) for x in med)
 
-        # If the track was lost for a moment or the match jumped far, do not let
-        # stale smoothing/history pull the box away from the actual detection.
+        # Avoid stale smoothing pulling boxes away from detections.
         try:
             old_center = tuple(int(v) for v in getattr(self, "center", (0, 0)))
         except Exception:
@@ -134,10 +122,7 @@ class Vehicle:
         except Exception:
             old_bbox = (0, 0, 1, 1)
 
-        # IMPORTANT: VehicleDetector increments lost_frames for *all* tracks before
-        # running assignment, so a matched track will typically have lost_frames==1
-        # at the start of this call. Treat "lost" as >1 so we only reset after an
-        # actual missed frame.
+        # Treat lost as >1 so we only reset after a true miss.
         lost_frames_now = int(getattr(self, "lost_frames", 0) or 0)
         was_lost = lost_frames_now > 1
         teleport_px = float(getattr(config, "TRACK_TELEPORT_RESET_DISTANCE_PX", 0.0) or 0.0)
@@ -149,16 +134,14 @@ class Vehicle:
         except Exception:
             jump = 0.0
 
-        # Stationary lock: when a vehicle is not moving, keep its bbox/center stable.
-        # This prevents slow drift from segmentation noise, which otherwise can make
-        # collision evidence flicker and accident alerts disappear.
+        # Stationary lock keeps bbox/center stable when car is barely moving.
         enter_px = float(getattr(config, "TRACK_STATIONARY_ENTER_PX", 2.0) or 2.0)
         exit_px = float(getattr(config, "TRACK_STATIONARY_EXIT_PX", 6.0) or 6.0)
         enter_px = max(0.0, min(25.0, enter_px))
         exit_px = max(enter_px + 0.5, min(60.0, exit_px))
         locked = bool(getattr(self, "_stationary_locked", False))
 
-        # Reset lock on true loss/teleport.
+        # Reset lock on true loss or teleport.
         if was_lost or jump > teleport_px:
             locked = False
         else:
@@ -171,15 +154,14 @@ class Vehicle:
         setattr(self, "_stationary_locked", bool(locked))
 
         if was_lost or jump > teleport_px:
-            # Hard reset smoothing/histories to the current measurement.
+            # Reset smoothing/histories to current detection.
             try:
                 self._smooth_center = np.array((float(center[0]), float(center[1])), dtype=np.float32)
                 self._smooth_bbox = np.array(tuple(float(v) for v in bbox), dtype=np.float32)
             except Exception:
                 pass
 
-        # If we are locked as stationary and not lost, freeze bbox/center.
-        # Treat this as an observed update (lost_frames should reset).
+        # If stationary, freeze bbox/center and treat as observed.
         if locked and (not was_lost):
             now_ts = time.time()
             self.center = (int(old_center[0]), int(old_center[1]))
@@ -193,7 +175,7 @@ class Vehicle:
             except Exception:
                 pass
 
-            # Keep history stable too.
+            # Keep history aligned with frozen center/bbox.
             try:
                 if isinstance(getattr(self, "_center_history", None), deque):
                     self._center_history.append(tuple(int(v) for v in self.center))
@@ -211,7 +193,7 @@ class Vehicle:
             self.lost_frames = 0
             setattr(self, "_predicted_only", False)
 
-            # Record last observed measurement and reset ghost counters.
+            # Update last observed measurement and ghost counters.
             try:
                 self._last_observed_center = tuple(int(v) for v in self.center)
                 self._last_observed_bbox = tuple(int(v) for v in self.bbox)
@@ -225,7 +207,7 @@ class Vehicle:
             if self.seen_frames >= max(1, confirm_frames):
                 self.confirmed = True
 
-            # Update stopped state using stabilized center history.
+            # Update stopped state using recent positions.
             if len(self.positions) >= 2:
                 distance = np.linalg.norm(np.array(self.center) - np.array(self.positions[-2]))
                 if distance < config.STOPPED_DISTANCE_THRESHOLD:
@@ -238,7 +220,7 @@ class Vehicle:
 
             return
 
-        # Normalize raw detection inputs (anchor for clamping).
+        # Normalize raw detection inputs.
         try:
             rcx, rcy = center
         except Exception:
@@ -256,8 +238,7 @@ class Vehicle:
             max(1, int(round(float(rh)))),
         )
 
-        # Smoothing helps with jitter, but large alpha values can make the bbox lag.
-        # When cars are close together (or a collision alert is active), we prefer
+        # Smoothing reduces jitter but can lag when cars are close.
         # stronger stabilization to prevent rapid flicker from segmentation changes.
         base_alpha = float(getattr(config, "TRACK_SMOOTHING_ALPHA", 0.0) or 0.0)
         base_alpha = max(0.0, min(0.95, base_alpha))
