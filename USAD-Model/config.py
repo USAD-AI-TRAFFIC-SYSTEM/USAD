@@ -257,6 +257,12 @@ COLLISION_CLEAR_SECONDS = 0.0
 
 COLLISION_DUPLICATE_OVERLAP_MAX = 0.40  # lowered: catch same-car duplicate tracks earlier
 
+# Track-level duplicate suppression:
+# Sometimes one physical car produces 2 tracks (two boxes) due to segmentation jitter/blob splits.
+# These thresholds remove co-located duplicates so counts (congestion) stay stable.
+TRACK_DUPLICATE_OVERLAP_MAX = COLLISION_DUPLICATE_OVERLAP_MAX
+TRACK_DUPLICATE_CENTER_DIST_FRAC = 0.35
+
 ACCIDENT_CONFIDENCE_FRAMES = 30  # generic default
 COLLISION_CONFIDENCE_FRAMES = 2  # 2 consecutive frames to confirm (instant for sustained contact)
 

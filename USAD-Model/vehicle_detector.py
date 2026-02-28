@@ -742,6 +742,109 @@ class VehicleDetector:
         self._intersection_roi_mask: Optional[np.ndarray] = None
         self._intersection_roi_shape: Optional[Tuple[int, int]] = None
 
+    @staticmethod
+    def _overlap_over_min_area(b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]) -> float:
+        """Overlap ratio normalized by the smaller bbox area.
+
+        Useful to identify "same object twice" duplicates even when IoU is modest.
+        """
+        try:
+            x1, y1, w1, h1 = map(float, b1)
+            x2, y2, w2, h2 = map(float, b2)
+        except Exception:
+            return 0.0
+
+        if w1 <= 0 or h1 <= 0 or w2 <= 0 or h2 <= 0:
+            return 0.0
+
+        ax1, ay1, ax2, ay2 = x1, y1, x1 + w1, y1 + h1
+        bx1, by1, bx2, by2 = x2, y2, x2 + w2, y2 + h2
+        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+        iw, ih = max(0.0, ix2 - ix1), max(0.0, iy2 - iy1)
+        inter = float(iw * ih)
+        if inter <= 0:
+            return 0.0
+
+        a1 = float(w1 * h1)
+        a2 = float(w2 * h2)
+        denom = float(max(1.0, min(a1, a2)))
+        return inter / denom
+
+    def _suppress_duplicate_tracks(self):
+        """Remove co-located duplicate tracks (same physical car detected twice).
+
+        This directly stabilizes:
+        - on-screen vehicle count (len(vehicles))
+        - lane counts used for congestion / adaptive green timing
+        """
+        if not self.vehicles:
+            return
+
+        # Prefer dedicated tracking thresholds, else fall back to collision duplicate threshold.
+        overlap_max = float(getattr(config, "TRACK_DUPLICATE_OVERLAP_MAX", 0.0) or 0.0)
+        if overlap_max <= 0:
+            overlap_max = float(getattr(config, "COLLISION_DUPLICATE_OVERLAP_MAX", 0.40) or 0.40)
+        overlap_max = max(0.05, min(0.95, overlap_max))
+
+        center_frac = float(getattr(config, "TRACK_DUPLICATE_CENTER_DIST_FRAC", 0.35) or 0.35)
+        center_frac = max(0.10, min(0.90, center_frac))
+
+        # Only consider tracks that were observed this frame; lost/predicted tracks are handled by TTL logic.
+        active = [
+            v
+            for v in self.vehicles.values()
+            if bool(getattr(v, "confirmed", False)) and int(getattr(v, "lost_frames", 0) or 0) == 0
+        ]
+        if len(active) < 2:
+            return
+
+        to_remove: set[int] = set()
+        for i in range(len(active)):
+            v1 = active[i]
+            id1 = int(getattr(v1, "id", 0) or 0)
+            if id1 in to_remove:
+                continue
+            for j in range(i + 1, len(active)):
+                v2 = active[j]
+                id2 = int(getattr(v2, "id", 0) or 0)
+                if id2 in to_remove:
+                    continue
+
+                ov = float(self._overlap_over_min_area(v1.bbox, v2.bbox))
+                if ov < overlap_max:
+                    continue
+
+                try:
+                    c1 = np.array(v1.center, dtype=np.float32)
+                    c2 = np.array(v2.center, dtype=np.float32)
+                    center_dist = float(np.linalg.norm(c1 - c2))
+                except Exception:
+                    center_dist = 1e9
+
+                try:
+                    w1, h1 = int(v1.bbox[2]), int(v1.bbox[3])
+                    w2, h2 = int(v2.bbox[2]), int(v2.bbox[3])
+                    scale = float(max(1, min(w1, h1, w2, h2)))
+                except Exception:
+                    scale = 1.0
+
+                # If centers are extremely close relative to bbox size, it's almost surely a duplicate.
+                if center_dist > (center_frac * scale):
+                    continue
+
+                # Keep the more "established" track (more seen frames); break ties by lower ID.
+                s1 = int(getattr(v1, "seen_frames", 0) or 0)
+                s2 = int(getattr(v2, "seen_frames", 0) or 0)
+                if (s1 > s2) or (s1 == s2 and id1 < id2):
+                    to_remove.add(id2)
+                else:
+                    to_remove.add(id1)
+                    break
+
+        for vid in to_remove:
+            self.vehicles.pop(int(vid), None)
+
     def _create_bg_subtractor(self):
         history = int(getattr(config, "BACKGROUND_HISTORY", 120) or 120)
         var_threshold = int(getattr(config, "BACKGROUND_THRESHOLD", 30) or 30)
@@ -1003,6 +1106,9 @@ class VehicleDetector:
 
         # Update tracked vehicles
         self._update_tracking(detections)
+
+        # De-duplicate co-located tracks (prevents 1 physical car -> IDs 1 & 2 flicker)
+        self._suppress_duplicate_tracks()
 
         # IMPORTANT: "confirmed updates" should mean a confirmed track was matched to
         # an explicit detection in this frame (not merely rescued by presence checks).
