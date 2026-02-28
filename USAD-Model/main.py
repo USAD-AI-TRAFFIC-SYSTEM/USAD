@@ -7,7 +7,7 @@ import sys
 import os
 import importlib
 import threading
-from typing import Optional, Tuple, List, Dict
+from typing import Optional, Tuple
 import config
 from traffic_controller import TrafficController
 from vehicle_detector import VehicleDetector
@@ -82,6 +82,7 @@ class USAD:
         self.license_plate_detector = LicensePlateDetector()
         self.event_logger = EventLogger()
         self.emergency_notifier = EmergencyNotifier()
+        print(f"[Logs] Session logs and analytics: {os.path.abspath(config.LOG_DIRECTORY)}")
         
         # State variables
         self.current_active_lane = None
@@ -124,105 +125,6 @@ class USAD:
         # License plate OCR throttling (keeps EasyOCR from stalling frames)
         self._lp_last_attempt_ts = {}
         self._lp_frame_index = 0
-
-        # Plate memory: keeps recent OCR results tied to nearby tracks so labels
-        # don't disappear during brief tracking/ID instability while moving.
-        self._plate_memory: List[Dict] = []
-
-    @staticmethod
-    def _bbox_iou(b1, b2) -> float:
-        try:
-            x1, y1, w1, h1 = [int(round(float(v))) for v in b1]
-            x2, y2, w2, h2 = [int(round(float(v))) for v in b2]
-        except Exception:
-            return 0.0
-
-        ax1, ay1, ax2, ay2 = x1, y1, x1 + max(1, w1), y1 + max(1, h1)
-        bx1, by1, bx2, by2 = x2, y2, x2 + max(1, w2), y2 + max(1, h2)
-        ix1, iy1 = max(ax1, bx1), max(ay1, by1)
-        ix2, iy2 = min(ax2, bx2), min(ay2, by2)
-        iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
-        inter = float(iw * ih)
-        if inter <= 0:
-            return 0.0
-        union = float((ax2 - ax1) * (ay2 - ay1) + (bx2 - bx1) * (by2 - by1)) - inter
-        return inter / union if union > 0 else 0.0
-
-    def _prune_plate_memory(self, now_ts: float):
-        ttl = float(getattr(config, "LP_MEMORY_TTL_SECONDS", 3.0) or 3.0)
-        ttl = max(0.2, min(15.0, ttl))
-        self._plate_memory = [m for m in self._plate_memory if (now_ts - float(m.get("ts", 0.0))) <= ttl]
-
-    def _remember_vehicle_plate(self, vehicle, now_ts: float):
-        text = str(getattr(vehicle, "license_plate", "") or "").strip()
-        if not text:
-            return
-
-        conf = float(getattr(vehicle, "license_plate_confidence", 0.0) or 0.0)
-        bbox = tuple(int(round(float(v))) for v in getattr(vehicle, "bbox", (0, 0, 0, 0)))
-
-        best_idx = -1
-        best_score = -1.0
-        for idx, m in enumerate(self._plate_memory):
-            mb = m.get("bbox")
-            score = self._bbox_iou(bbox, mb)
-            if text == str(m.get("text", "")):
-                score += 0.25
-            if score > best_score:
-                best_score = score
-                best_idx = idx
-
-        entry = {
-            "text": text,
-            "conf": conf,
-            "bbox": bbox,
-            "ts": float(now_ts),
-        }
-
-        if best_idx >= 0 and best_score >= 0.10:
-            prev = self._plate_memory[best_idx]
-            if conf < float(prev.get("conf", 0.0) or 0.0):
-                entry["conf"] = float(prev.get("conf", 0.0) or 0.0)
-            self._plate_memory[best_idx] = entry
-        else:
-            self._plate_memory.append(entry)
-
-    def _apply_plate_memory(self, vehicles, now_ts: float):
-        if not self._plate_memory:
-            return
-
-        min_iou = float(getattr(config, "LP_MEMORY_MATCH_IOU", 0.10) or 0.10)
-        min_iou = max(0.0, min(0.8, min_iou))
-        max_center_px = float(getattr(config, "LP_MEMORY_MATCH_CENTER_PX", 90.0) or 90.0)
-        max_center_px = max(10.0, min(400.0, max_center_px))
-
-        for vehicle in vehicles:
-            if getattr(vehicle, "license_plate", None):
-                continue
-
-            vb = tuple(int(round(float(v))) for v in getattr(vehicle, "bbox", (0, 0, 0, 0)))
-            vc = np.array(getattr(vehicle, "center", (0, 0)), dtype=np.float32)
-
-            best = None
-            best_score = -1.0
-            for m in self._plate_memory:
-                mb = m.get("bbox")
-                iou = self._bbox_iou(vb, mb)
-                mx, my, mw, mh = [int(round(float(v))) for v in mb]
-                mc = np.array((mx + mw / 2.0, my + mh / 2.0), dtype=np.float32)
-                dist = float(np.linalg.norm(vc - mc))
-                if iou < min_iou and dist > max_center_px:
-                    continue
-
-                score = (iou * 2.0) + max(0.0, (max_center_px - dist) / max_center_px)
-                if score > best_score:
-                    best_score = score
-                    best = m
-
-            if best is not None:
-                vehicle.license_plate = str(best.get("text", "") or "")
-                vehicle.license_plate_confidence = float(best.get("conf", 0.0) or 0.0)
-                setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
         
     def initialize_camera(self) -> bool:
         """Initialize camera or video source"""
@@ -335,103 +237,80 @@ class USAD:
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        # License plate detection (ASYNC — main thread never blocks on OCR)
-        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
-            self._lp_frame_index += 1
-            every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
-            max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
-            cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
-            reocr_hold = float(getattr(config, "LP_REOCR_HOLD_SECONDS", 1.0) or 1.0)
-            if every_n <= 0:
-                every_n = 1
-            if max_per_frame < 0:
-                max_per_frame = 0
-
-            now_ts = time.time()
-            self._prune_plate_memory(now_ts)
-            self._apply_plate_memory(vehicles, now_ts)
-
-            # ── Step 1: Pick up any results the background worker has finished ──
-            # This never blocks — if OCR isn't done yet, get_result() returns None.
-            for vehicle in vehicles:
-                vid = int(vehicle.id)
-                result = self.license_plate_detector.get_result(vid)
-                if result:
-                    plate_text, confidence, plate_bbox = result
-                    vehicle.license_plate = plate_text
-                    vehicle.license_plate_confidence = confidence
-                    setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
-                    setattr(vehicle, "license_plate_bbox",
-                            tuple(int(round(float(v))) for v in plate_bbox))
-                    self._remember_vehicle_plate(vehicle, now_ts)
-
-            # ── Step 2: Submit new OCR jobs (returns immediately, no waiting) ──
-            if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
-                attempts = 0
-                for vehicle in vehicles:
-                    if vehicle.license_plate:
-                        last_seen = float(getattr(vehicle, "_lp_last_seen_ts", 0.0) or 0.0)
-                        if reocr_hold > 0 and (now_ts - last_seen) < reocr_hold:
-                            self._remember_vehicle_plate(vehicle, now_ts)
-                            continue
-
-                    last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
-                    if cooldown > 0 and (now_ts - last_ts) < cooldown:
-                        if vehicle.license_plate:
-                            self._remember_vehicle_plate(vehicle, now_ts)
-                        continue
-
-                    # submit_async() queues the job and returns True/False instantly
-                    queued = self.license_plate_detector.submit_async(
-                        int(vehicle.id), frame, vehicle.bbox
-                    )
-                    if queued:
-                        self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
-                        attempts += 1
-                    if attempts >= max_per_frame:
-                        break
-
-            for vehicle in vehicles:
-                if vehicle.license_plate:
-                    if not hasattr(vehicle, "_lp_last_seen_ts"):
-                        setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
-                    self._remember_vehicle_plate(vehicle, now_ts)
-
-        # Detect violations AFTER LP update so violation snapshots include plate when possible.
+        # Detect violations (skip when in idle mode)
         if self._no_car_idle_mode:
             new_violations = []
         else:
             new_violations = self.violation_detector.detect_violations(vehicles)
-
-        # Best-effort OCR for violations that still have no plate at event time.
-        if new_violations and config.ENABLE_LICENSE_PLATE_DETECTION:
-            for violation in new_violations:
-                if getattr(violation, "license_plate", None):
-                    continue
-                vehicle = getattr(violation, "vehicle", None)
-                if vehicle is None:
-                    continue
-                if getattr(vehicle, "license_plate", None):
-                    violation.license_plate = vehicle.license_plate
-                    continue
-                result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
-                if result:
-                    plate_text, confidence, _ = result
-                    vehicle.license_plate = plate_text
-                    vehicle.license_plate_confidence = confidence
-                    violation.license_plate = plate_text
-
+        
         # Log new violations
         for violation in new_violations:
-            lane = str(getattr(violation, "lane", None) or "UNKNOWN-LANE")
-            plate = str(
-                getattr(violation, "license_plate", None)
-                or getattr(getattr(violation, "vehicle", None), "license_plate", None)
-                or "UNKNOWN-PLATE"
-            )
-            vtype = str(getattr(violation, "type", "UNKNOWN")).replace("_", " ")
-            print(f"[VIOLATION] {lane} | {plate} | {vtype}")
             self.event_logger.log_violation(violation)
+            print(f"[VIOLATION] {violation.get_description()}", flush=True)
+        
+        # License plate detection
+        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
+            # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
+            self._lp_frame_index += 1
+            every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
+            max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
+            cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
+            debug_terminal = bool(getattr(config, "LP_DEBUG_TERMINAL", False))
+            debug_every_n = int(getattr(config, "LP_DEBUG_PRINT_EVERY_N_FRAMES", every_n) or every_n)
+            if every_n <= 0:
+                every_n = 1
+            if max_per_frame < 0:
+                max_per_frame = 0
+            if debug_every_n <= 0:
+                debug_every_n = 1
+
+            debug_this_frame = debug_terminal and ((self._lp_frame_index % debug_every_n) == 0)
+
+            if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
+                now_ts = time.time()
+                attempts = 0
+                successes = 0
+                for vehicle in vehicles:
+                    if vehicle.license_plate:
+                        continue
+
+                    last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
+                    if cooldown > 0 and (now_ts - last_ts) < cooldown:
+                        continue
+
+                    self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
+                    result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
+                    debug_info = dict(getattr(self.license_plate_detector, "last_debug_info", {}) or {})
+                    if result:
+                        plate_text, confidence, plate_bbox = result
+                        vehicle.license_plate = plate_text
+                        vehicle.license_plate_confidence = confidence
+                        successes += 1
+                        if debug_this_frame:
+                            print(
+                                f"[LP DEBUG] vehicle_id={vehicle.id} status=SUCCESS text={plate_text} conf={confidence:.1f}% "
+                                f"candidates={debug_info.get('candidate_count', 0)}"
+                            )
+                    elif debug_this_frame:
+                        print(
+                            f"[LP DEBUG] vehicle_id={vehicle.id} status=NO_READ reason={debug_info.get('status', 'unknown')} "
+                            f"candidates={debug_info.get('candidate_count', 0)}"
+                        )
+
+                    attempts += 1
+                    if attempts >= max_per_frame:
+                        break
+
+                if debug_this_frame:
+                    print(
+                        f"[LP DEBUG] frame={self._lp_frame_index} attempts={attempts} successes={successes} "
+                        f"vehicles={len(vehicles)} ocr_available={self.license_plate_detector.ocr_available}"
+                    )
+            elif debug_this_frame and len(vehicles) == 0:
+                print(
+                    f"[LP DEBUG] frame={self._lp_frame_index} skipped=no_vehicles "
+                    f"ocr_available={self.license_plate_detector.ocr_available}"
+                )
         
         # Intelligent traffic control
         self.update_traffic_control(lane_counts_for_control, accidents)
@@ -501,13 +380,11 @@ class USAD:
 
         simulate = bool(getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True)) and not self.arduino_connected
         if not simulate:
-            # When Arduino is connected, we need to sync the model's state with Arduino
-            # If in auto mode, cycle in sync with Arduino's timing (5s green, 3s yellow)
+            # When Arduino is connected, sync the model's state with Arduino timing (config.GREEN_TIME, config.YELLOW_TIME)
             if self.software_auto_mode:
-                # Sync with Arduino's auto cycling timing
-                arduino_green_time = 5.0  # Arduino uses 5 seconds green
-                arduino_yellow_time = 3.0  # Arduino uses 3 seconds yellow
-                
+                arduino_green_time = float(getattr(config, "GREEN_TIME", 25))
+                arduino_yellow_time = float(getattr(config, "YELLOW_TIME", 4))
+
                 # Ensure we have an active lane
                 if self.current_active_lane is None:
                     self.current_active_lane = self._lane_order()[0]
@@ -516,7 +393,7 @@ class USAD:
                     self.lane_green_duration = arduino_green_time
                     self._apply_signal_states(self.current_active_lane, "GREEN")
                     return
-                
+
                 # Cycle in sync with Arduino's timing
                 if self.current_phase == "GREEN":
                     if now - self.phase_start_time >= arduino_green_time:
@@ -618,8 +495,8 @@ class USAD:
                     self.current_active_lane = self._lane_order()[0]
                     self.current_phase = "GREEN"
                     self.phase_start_time = time.time()
-                    # Use Arduino's timing (5s green, 3s yellow) when synced with Arduino
-                    self.lane_green_duration = 5.0  # Arduino uses 5 seconds green
+                    # Use Arduino's timing (config) when synced with Arduino
+                    self.lane_green_duration = float(getattr(config, "GREEN_TIME", 25))
                     self._apply_signal_states(self.current_active_lane, "GREEN")
                 self.software_auto_mode = True
     
@@ -884,31 +761,36 @@ class USAD:
         return True
     
     def print_statistics(self):
-        """Print current statistics"""
+        """Print current statistics (from logged data so terminal matches analytics report)"""
         print("\n" + "="*70)
         print("CURRENT STATISTICS")
         print("="*70)
-        
-        # Violations
-        v_stats = self.violation_detector.get_statistics()
-        print(f"\nViolations: {v_stats['total_violations']}")
-        if v_stats.get('by_type'):
-            for vtype, count in v_stats['by_type'].items():
+
+        # Use event_logger analytics (CSV) so terminal matches the saved report
+        v_analytics = self.event_logger.get_violation_analytics()
+        a_analytics = self.event_logger.get_accident_analytics()
+
+        # Violations (from log files)
+        total_v = v_analytics.get('total', 0)
+        print(f"\nViolations: {total_v}")
+        if v_analytics.get('by_type'):
+            for vtype, count in v_analytics['by_type'].items():
                 print(f"  - {vtype}: {count}")
-        
-        # Accidents
-        accidents = self.accident_detector.get_confirmed_accidents()
-        print(f"\nActive Accidents: {len(accidents)}")
-        for accident in accidents:
-            print(f"  - {accident.get_description()}")
-        
-        # Emergency notifications
-        print(f"\nEmergency Notifications: {self.emergency_notifier.get_notification_count()}")
-        
-        # Generate full report
+
+        # Accidents (from log files)
+        total_a = a_analytics.get('total', 0)
+        emergency_n = a_analytics.get('emergency_notified', 0)
+        print(f"\nActive Accidents (logged this session): {total_a}")
+        if a_analytics.get('by_type'):
+            for atype, count in a_analytics['by_type'].items():
+                print(f"  - {atype}: {count}")
+
+        print(f"\nEmergency Notifications: {emergency_n}")
+
+        # Generate full report (same numbers as above)
         print("\nGenerating full analytics report...")
         self.event_logger.generate_report()
-        
+
         print("="*70 + "\n")
     
     def toggle_fullscreen(self):

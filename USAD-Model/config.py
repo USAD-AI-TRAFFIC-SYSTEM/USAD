@@ -1,5 +1,10 @@
 """USAD configuration."""
 
+import os as _os
+
+# Resolve the USAD root (one level above this file: USAD-Model/../ = USAD/)
+_USAD_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
 # Arduino
 ARDUINO_PORT = "COM5"
 ARDUINO_BAUDRATE = 9600
@@ -9,7 +14,7 @@ ARDUINO_TIMEOUT = 1
 CAMERA_SOURCE = 0
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
-CAMERA_FPS = 20
+CAMERA_FPS = 30
 
 # Lanes (polygons in 1280x720 coordinates)
 LANES = {
@@ -47,8 +52,8 @@ LANES = {
 INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 
 # Timing (seconds)
-GREEN_TIME = 30
-YELLOW_TIME = 3
+GREEN_TIME = 25   # seconds (match Arduino)
+YELLOW_TIME = 4   # seconds (match Arduino)
 RED_TIME = 30
 
 # Adaptive timing
@@ -224,13 +229,13 @@ VIOLATION_SCREEN_ALERT_DELAY_SECONDS = 0.0
 COLLISION_DISTANCE_MM = 1.0
 PIXELS_PER_MM = 5.0
 
-COLLISION_OBJECT_GAP_PX = 2.0
+COLLISION_OBJECT_GAP_PX = 10.0   # px between color-mask blobs to count as collision
 
-COLLISION_BBOX_TOUCH_PX = 2.0
+COLLISION_BBOX_TOUCH_PX = 10.0   # px between bboxes (used when color mask unavailable)
 
 COLLISION_MASK_DILATE_PX = 0
 
-COLLISION_RELEASE_EXTRA_PX = 1.0
+COLLISION_RELEASE_EXTRA_PX = 5.0  # hysteresis: needs gap > 30px to leave collision state
 
 QUEUE_PROXIMITY_PX = 45.0
 
@@ -250,10 +255,10 @@ QUEUE_MIN_SECONDS = 0.5
 COLLISION_ALERT_HOLD_SECONDS = 0.0
 COLLISION_CLEAR_SECONDS = 0.0
 
-COLLISION_DUPLICATE_OVERLAP_MAX = 0.65
+COLLISION_DUPLICATE_OVERLAP_MAX = 0.40  # lowered: catch same-car duplicate tracks earlier
 
 ACCIDENT_CONFIDENCE_FRAMES = 30  # generic default
-COLLISION_CONFIDENCE_FRAMES = 1
+COLLISION_CONFIDENCE_FRAMES = 2  # 2 consecutive frames to confirm (instant for sustained contact)
 
 ACCIDENT_REMOVE_AFTER_MISSED_FRAMES = 10
 CONFIRMED_ACCIDENT_REMOVE_AFTER_MISSED_FRAMES = 30
@@ -373,17 +378,9 @@ LP_TEMPLATE_MIN_CHAR_SCORE = 0.45
 LP_TEMPLATE_OCR_ROTATIONS = [0, 90, 180, 270]
 
 # License plate OCR throttling (EasyOCR can be expensive)
-LP_DETECT_EVERY_N_FRAMES = 4
+LP_DETECT_EVERY_N_FRAMES = 10
 LP_MAX_VEHICLES_PER_FRAME = 1
-LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.35
-
-# Keep plate text stable across brief tracking/ID jitter while vehicle is moving.
-LP_MEMORY_TTL_SECONDS = 4.0
-LP_MEMORY_MATCH_IOU = 0.10
-LP_MEMORY_MATCH_CENTER_PX = 90.0
-
-# If a track already has a plate, wait this long before forcing another OCR pass.
-LP_REOCR_HOLD_SECONDS = 1.5
+LP_PER_VEHICLE_COOLDOWN_SECONDS = 0.5
 
 # Event-time best-effort OCR caps (accidents/violations). Keep low to avoid lag.
 LP_EVENT_MAX_VEHICLES_PER_ACCIDENT = 2
@@ -395,7 +392,8 @@ ENABLE_CALL_SIMULATION = True
 NOTIFICATION_COOLDOWN = 60
 
 # Logging
-LOG_DIRECTORY = "logs"
+# Logs go to USAD-Model/logs/ (same folder as this config).
+LOG_DIRECTORY = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logs")
 EVENT_LOG_FILE = "traffic_events.csv"
 VIOLATION_LOG_FILE = "violations.csv"
 ACCIDENT_LOG_FILE = "accidents.csv"
@@ -414,8 +412,7 @@ EVENT_TYPES = {
 }
 
 # Vehicle types (based on size)
-VEHICLE_TYPES = {
-    "SMALL": (200, 2500),      # Small objects, motorcycle, small car
+VEHICLE_TYPES = {    "SMALL": (200, 2500),      # Small objects, motorcycle, small car
     "MEDIUM": (2500, 6000),    # Sedan, SUV
     "LARGE": (6000, MAX_VEHICLE_AREA)     # Truck, bus
 }

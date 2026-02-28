@@ -886,13 +886,14 @@ class AccidentDetector:
                 gap_px = bbox_gap_distance_px(vehicle1.bbox, vehicle2.bbox)
 
                 # Suppress "collisions" between two detections that heavily overlap.
-                # This typically means the same physical car was detected twice.
-                overlap_max = float(getattr(config, "COLLISION_DUPLICATE_OVERLAP_MAX", 0.65))
+                # This typically means the same physical car was detected twice (e.g.,
+                # blob-splitting spawned two tracks from one car).
+                # We suppress whenever the two tracks are co-located regardless of
+                # whether they are new/confirmed — two confirmed tracks from the same
+                # physical object must not register as a collision.
+                overlap_max = float(getattr(config, "COLLISION_DUPLICATE_OVERLAP_MAX", 0.40))
                 overlap_ratio = _overlap_over_min_area(vehicle1.bbox, vehicle2.bbox)
                 if overlap_ratio >= overlap_max:
-                    # High overlap can be a duplicate track OR a real collision after impact.
-                    # Only suppress as duplicate when the two tracks are extremely co-located
-                    # AND at least one of them is "new" / likely spawned by a split/jitter.
                     c1 = np.array(vehicle1.center, dtype=np.float32)
                     c2 = np.array(vehicle2.center, dtype=np.float32)
                     center_dist = float(np.linalg.norm(c1 - c2))
@@ -900,16 +901,9 @@ class AccidentDetector:
                     w2, h2 = vehicle2.bbox[2], vehicle2.bbox[3]
                     scale = float(max(1, min(w1, h1, w2, h2)))
 
-                    now_ts = time.time()
-                    delay = float(getattr(config, "ACCIDENT_DETECTION_DELAY_SECONDS", 1.5))
-                    v1_seen = float(self._vehicle_first_seen.get(int(vehicle1.id), now_ts))
-                    v2_seen = float(self._vehicle_first_seen.get(int(vehicle2.id), now_ts))
-                    v1_is_new = (now_ts - v1_seen) < max(0.1, delay)
-                    v2_is_new = (now_ts - v2_seen) < max(0.1, delay)
-                    v1_unconfirmed = not bool(getattr(vehicle1, "confirmed", False))
-                    v2_unconfirmed = not bool(getattr(vehicle2, "confirmed", False))
-
-                    if center_dist <= (0.25 * scale) and (v1_is_new or v2_is_new or v1_unconfirmed or v2_unconfirmed):
+                    # Two tracks whose centres are within 35 % of the smaller bbox
+                    # dimension are almost certainly the same physical object.
+                    if center_dist <= (0.35 * scale):
                         continue
 
                 pair_key = (min(vehicle1.id, vehicle2.id), max(vehicle1.id, vehicle2.id))

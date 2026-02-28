@@ -14,50 +14,44 @@ class EventLogger:
     """Logs traffic events and generates analytics"""
     
     def __init__(self):
-        configured_dir = str(getattr(config, "LOG_DIRECTORY", "logs") or "logs")
-        if os.path.isabs(configured_dir):
-            self.log_directory = configured_dir
-        else:
-            base_dir = os.path.dirname(os.path.abspath(__file__))
-            self.log_directory = os.path.join(base_dir, configured_dir)
-
-        os.makedirs(self.log_directory, exist_ok=True)
-
-        self.event_log_path = os.path.join(self.log_directory, config.EVENT_LOG_FILE)
-        self.violation_log_path = os.path.join(self.log_directory, config.VIOLATION_LOG_FILE)
-        self.accident_log_path = os.path.join(self.log_directory, config.ACCIDENT_LOG_FILE)
+        os.makedirs(config.LOG_DIRECTORY, exist_ok=True)
+        
+        self.event_log_path = os.path.join(config.LOG_DIRECTORY, config.EVENT_LOG_FILE)
+        self.violation_log_path = os.path.join(config.LOG_DIRECTORY, config.VIOLATION_LOG_FILE)
+        self.accident_log_path = os.path.join(config.LOG_DIRECTORY, config.ACCIDENT_LOG_FILE)
+        self.plate_log_path = os.path.join(config.LOG_DIRECTORY, 'license_plates.csv')
         
         self._initialize_log_files()
         
         self.last_analytics_update = time.time()
         
     def _initialize_log_files(self):
-        """Create log files with headers if they don't exist"""
-        if not os.path.exists(self.event_log_path):
-            with open(self.event_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'timestamp', 'event_type', 'event_id', 'lane', 'vehicle_id',
-                    'vehicle_type', 'license_plate', 'description', 'location'
-                ])
-        
-        if not os.path.exists(self.violation_log_path):
-            with open(self.violation_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'timestamp', 'date', 'time', 'hour', 'violation_type', 'violation_id',
-                    'vehicle_id', 'vehicle_type', 'license_plate', 'lane', 'traffic_signal',
-                    'speed', 'location_x', 'location_y'
-                ])
-        
-        if not os.path.exists(self.accident_log_path):
-            with open(self.accident_log_path, 'w', newline='') as f:
-                writer = csv.writer(f)
-                writer.writerow([
-                    'timestamp', 'date', 'time', 'hour', 'accident_type', 'accident_id',
-                    'lane', 'vehicle_ids', 'vehicle_count', 'duration', 'emergency_notified',
-                    'location_x', 'location_y'
-                ])
+        """Always overwrite logs with headers at startup (clear previous runs)"""
+        with open(self.event_log_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'event_type', 'event_id', 'lane', 'vehicle_id',
+                'vehicle_type', 'license_plate', 'description', 'location'
+            ])
+        with open(self.violation_log_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'date', 'time', 'hour', 'violation_type', 'violation_id',
+                'vehicle_id', 'vehicle_type', 'license_plate', 'lane', 'traffic_signal',
+                'speed', 'location_x', 'location_y'
+            ])
+        with open(self.accident_log_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'date', 'time', 'hour', 'accident_type', 'accident_id',
+                'lane', 'vehicle_ids', 'vehicle_count', 'duration', 'emergency_notified',
+                'location_x', 'location_y'
+            ])
+        with open(self.plate_log_path, 'w', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow([
+                'timestamp', 'vehicle_id', 'plate_text', 'confidence', 'location_x', 'location_y'
+            ])
     
     def log_violation(self, violation: Violation):
         """Log a traffic violation"""
@@ -159,6 +153,28 @@ class EventLogger:
         with open(self.event_log_path, 'a', newline='') as f:
             writer = csv.writer(f)
             writer.writerow(row)
+    
+    def log_license_plate(self, vehicle_id: int, plate_text: str, confidence: float, 
+                          location: tuple, timestamp: Optional[float] = None):
+        """Log a successfully detected license plate"""
+        if timestamp is None:
+            timestamp = time.time()
+        dt = datetime.fromtimestamp(timestamp)
+        
+        row = [
+            dt.isoformat(),
+            vehicle_id,
+            plate_text,
+            round(confidence, 1),
+            location[0],
+            location[1]
+        ]
+        
+        with open(self.plate_log_path, 'a', newline='') as f:
+            writer = csv.writer(f)
+            writer.writerow(row)
+        
+        print(f"[PLATE LOG] vehicle_id={vehicle_id} plate={plate_text} conf={confidence:.1f}% at ({location[0]}, {location[1]})")
     
     def get_violation_analytics(self, time_window: Optional[int] = None) -> Dict:
         """
@@ -272,7 +288,7 @@ class EventLogger:
     
     def generate_report(self, output_file: str = 'analytics_report.txt'):
         """Generate a comprehensive analytics report"""
-        report_path = os.path.join(self.log_directory, output_file)
+        report_path = os.path.join(config.LOG_DIRECTORY, output_file)
         
         # Get analytics
         violation_analytics = self.get_violation_analytics()
@@ -341,7 +357,7 @@ if __name__ == "__main__":
     print("Testing Event Logger...")
     
     logger = EventLogger()
-    print(f"✓ Log files initialized in: {logger.log_directory}")
+    print(f"✓ Log files initialized in: {config.LOG_DIRECTORY}")
     
     # Test analytics
     v_analytics = logger.get_violation_analytics()
