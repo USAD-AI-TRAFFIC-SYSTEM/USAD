@@ -255,7 +255,7 @@ class USADApp(ctk.CTk):
 
         # ── Total vehicles  — primary ────────────────────────────────────
         self._lbl_vehicles = ctk.CTkLabel(p, text="Total Vehicles: --",
-                                           font=("Helvetica", 16, "bold"),
+                                           font=("Helvetica", 16, "bold"),  
                                            text_color=C_PRIMARY, anchor="w")
         self._lbl_vehicles.pack(fill="x", pady=(6, 0))
 
@@ -415,7 +415,7 @@ class USADApp(ctk.CTk):
             count = int(lane_counts.get(lane_key, 0))
             state = u._classify_lane_congestion(count)
             state_colors = {"CONGESTED": "#b71c1c", "NON-CONGESTED": "#f57f17", "EMPTY": C_MUTED}
-            l_count.configure(text=f"{LANE_NAMES.get(lane_key, lane_key)}: {count} veh")
+            l_count.configure(text=f"{LANE_NAMES.get(lane_key, lane_key)}: {count}")
             l_state.configure(text=state, text_color=state_colors.get(state, C_SECONDARY))
 
     # ── Button commands ───────────────────────────────────────────────────
