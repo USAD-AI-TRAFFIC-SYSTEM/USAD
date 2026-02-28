@@ -335,9 +335,8 @@ class USAD:
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        # License plate detection
+        # License plate detection (ASYNC — main thread never blocks on OCR)
         if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
-            # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
             self._lp_frame_index += 1
             every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
             max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
@@ -352,6 +351,21 @@ class USAD:
             self._prune_plate_memory(now_ts)
             self._apply_plate_memory(vehicles, now_ts)
 
+            # ── Step 1: Pick up any results the background worker has finished ──
+            # This never blocks — if OCR isn't done yet, get_result() returns None.
+            for vehicle in vehicles:
+                vid = int(vehicle.id)
+                result = self.license_plate_detector.get_result(vid)
+                if result:
+                    plate_text, confidence, plate_bbox = result
+                    vehicle.license_plate = plate_text
+                    vehicle.license_plate_confidence = confidence
+                    setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
+                    setattr(vehicle, "license_plate_bbox",
+                            tuple(int(round(float(v))) for v in plate_bbox))
+                    self._remember_vehicle_plate(vehicle, now_ts)
+
+            # ── Step 2: Submit new OCR jobs (returns immediately, no waiting) ──
             if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
                 attempts = 0
                 for vehicle in vehicles:
@@ -367,17 +381,13 @@ class USAD:
                             self._remember_vehicle_plate(vehicle, now_ts)
                         continue
 
-                    self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
-                    result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
-                    if result:
-                        plate_text, confidence, plate_bbox = result
-                        vehicle.license_plate = plate_text
-                        vehicle.license_plate_confidence = confidence
-                        setattr(vehicle, "_lp_last_seen_ts", float(now_ts))
-                        setattr(vehicle, "license_plate_bbox", tuple(int(round(float(v))) for v in plate_bbox))
-                        self._remember_vehicle_plate(vehicle, now_ts)
-
-                    attempts += 1
+                    # submit_async() queues the job and returns True/False instantly
+                    queued = self.license_plate_detector.submit_async(
+                        int(vehicle.id), frame, vehicle.bbox
+                    )
+                    if queued:
+                        self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
+                        attempts += 1
                     if attempts >= max_per_frame:
                         break
 
