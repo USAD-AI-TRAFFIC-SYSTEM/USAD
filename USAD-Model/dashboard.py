@@ -141,44 +141,59 @@ class DashboardApp(ctk.CTk):
 
         # Build pages
         self._build_overview(self._pages["Overview"])
+
+        # ── Violations table
+        # CSV: timestamp,date,time,hour,violation_type,violation_id,vehicle_id,
+        #      vehicle_type,license_plate,lane,traffic_signal,speed,location_x,location_y
         self._build_table(
             self._pages["Violations"], self.violations,
-            ["#", "Time", "Type", "Lane", "Vehicle Type", "Speed (km/h)", "Signal"],
+            ["#", "Timestamp", "Type", "Lane", "Vehicle Type", "Plate", "Speed (km/h)", "Signal"],
             lambda r: [
-                r.get("violation_id",""),
-                r.get("time",""),
-                r.get("violation_type",""),
-                LANE_NAMES.get(r.get("lane",""), r.get("lane","")),
-                f'{r.get("vehicle_type","")}',
-                f'{float(r.get("speed",0)):.1f}' if r.get("speed") else "—",
-                r.get("traffic_signal",""),
+                r.get("violation_id", ""),
+                r.get("timestamp", "")[:19].replace("T", " "),
+                r.get("violation_type", ""),
+                LANE_NAMES.get(r.get("lane", ""), r.get("lane", "")),
+                r.get("vehicle_type", ""),
+                r.get("license_plate", ""),
+                f'{float(r.get("speed", 0)):.1f}' if r.get("speed") else "—",
+                r.get("traffic_signal", ""),
             ],
             accent="#b71c1c"
         )
+
+        # ── Accidents table
+        # CSV: timestamp,date,time,hour,accident_type,accident_id,lane,vehicle_ids,
+        #      vehicle_count,duration,emergency_notified,location_x,location_y
         self._build_table(
             self._pages["Accidents"], self.accidents,
-            ["#", "Time", "Type", "Lane", "Vehicle IDs", "Duration (s)", "Notified"],
+            ["#", "Timestamp", "Type", "Lane", "Vehicle IDs", "Count", "Duration (s)", "Notified"],
             lambda r: [
-                r.get("accident_id",""),
-                r.get("time",""),
-                r.get("accident_type",""),
-                LANE_NAMES.get(r.get("lane",""), r.get("lane","")),
-                r.get("vehicle_ids",""),
-                f'{float(r.get("duration",0)):.2f}' if r.get("duration") else "—",
-                r.get("emergency_notified",""),
+                r.get("accident_id", ""),
+                r.get("timestamp", "")[:19].replace("T", " "),
+                r.get("accident_type", ""),
+                LANE_NAMES.get(r.get("lane", ""), r.get("lane", "")),
+                r.get("vehicle_ids", ""),
+                r.get("vehicle_count", ""),
+                f'{float(r.get("duration", 0)):.2f}' if r.get("duration") else "—",
+                r.get("emergency_notified", ""),
             ],
             accent="#e65100"
         )
+
+        # ── Traffic Events table
+        # CSV: timestamp,event_type,event_id,lane,vehicle_id,vehicle_type,
+        #      license_plate,description,location
         self._build_table(
             self._pages["Traffic Events"], self.traffic,
-            ["#", "Timestamp", "Type", "Lane", "Vehicle", "Description"],
+            ["#", "Timestamp", "Type", "Lane", "Vehicle Type", "Plate", "Description"],
             lambda r: [
-                r.get("event_id",""),
-                r.get("timestamp","")[:19].replace("T"," "),
-                r.get("event_type",""),
-                LANE_NAMES.get(r.get("lane",""), r.get("lane","")),
-                f'{r.get("vehicle_type","")} #{r.get("vehicle_id","")}',
-                r.get("description","")[:70],
+                r.get("event_id", ""),
+                r.get("timestamp", "")[:19].replace("T", " "),
+                r.get("event_type", ""),
+                LANE_NAMES.get(r.get("lane", ""), r.get("lane", "")),
+                r.get("vehicle_type", ""),
+                r.get("license_plate", ""),
+                r.get("description", "")[:70],
             ],
             accent="#1565c0"
         )
@@ -246,7 +261,6 @@ class DashboardApp(ctk.CTk):
                          text_color=C_MUTED, anchor="w").pack(
                 fill="x", padx=14, pady=(0, 12))
 
-        # ── NEW: Hollow pie / donut chart helper ──────────────────────────
         def draw_donut(parent, data_dict, colors, name_map=None):
             """Render a hollow pie (donut) chart using tkinter Canvas."""
             SIZE  = 200
@@ -265,7 +279,6 @@ class DashboardApp(ctk.CTk):
             canvas.pack(side="left", padx=(16, 8), pady=14)
 
             if total == 0:
-                # Empty state: draw a grey ring
                 canvas.create_oval(CX - R_OUT, CY - R_OUT, CX + R_OUT, CY + R_OUT,
                                    fill=C_DIVIDER, outline="")
                 canvas.create_oval(CX - R_IN, CY - R_IN, CX + R_IN, CY + R_IN,
@@ -273,15 +286,12 @@ class DashboardApp(ctk.CTk):
                 canvas.create_text(CX, CY, text="No data",
                                    font=("Helvetica", 9), fill=C_MUTED)
             else:
-                start_angle = 90.0  # start from 12-o'clock position
-
+                start_angle = 90.0
                 for label, cnt in sorted_data:
                     if cnt == 0:
                         continue
                     sweep = 360.0 * cnt / total
                     color = colors.get(label, C_MUTED)
-
-                    # Draw pie slice
                     canvas.create_arc(
                         CX - R_OUT, CY - R_OUT, CX + R_OUT, CY + R_OUT,
                         start=start_angle, extent=-sweep,
@@ -290,19 +300,15 @@ class DashboardApp(ctk.CTk):
                     )
                     start_angle -= sweep
 
-                # White inner circle → creates the donut hole
                 canvas.create_oval(
                     CX - R_IN, CY - R_IN, CX + R_IN, CY + R_IN,
                     fill=C_BG, outline=C_BG
                 )
-
-                # Center: total count + label
                 canvas.create_text(CX, CY - 9, text=str(total),
                                    font=("Helvetica", 17, "bold"), fill=C_PRIMARY)
                 canvas.create_text(CX, CY + 10, text="total",
                                    font=("Helvetica", 8), fill=C_MUTED)
 
-            # ── Legend to the right of the canvas ────────────────────────
             legend = ctk.CTkFrame(outer, fg_color="transparent")
             legend.pack(side="left", fill="y", pady=14, padx=(4, 20))
 
@@ -325,12 +331,10 @@ class DashboardApp(ctk.CTk):
                              font=("Helvetica", 10, "bold"),
                              text_color=C_PRIMARY,
                              anchor="w", width=68).pack(side="left")
-
                 ctk.CTkLabel(lg_row, text=str(cnt),
                              font=("Helvetica", 10, "bold"),
                              text_color=color,
                              anchor="e", width=30).pack(side="left")
-
                 ctk.CTkLabel(lg_row, text=pct,
                              font=("Helvetica", 9),
                              text_color=C_MUTED,
@@ -361,13 +365,13 @@ class DashboardApp(ctk.CTk):
         section("Summary")
         r1 = card_row(scroll, 4)
         notified = sum(1 for r in self.accidents
-                       if r.get("emergency_notified","").strip().lower() == "yes")
-        stat_card(r1, 0, "Total Violations",  len(self.violations),  "Red light",        "#b71c1c")
-        stat_card(r1, 1, "Total Accidents",   len(self.accidents),   "All COLLISION",    "#e65100")
-        stat_card(r1, 2, "Traffic Events",    len(self.traffic),     "Combined log",     C_PRIMARY)
+                       if r.get("emergency_notified", "").strip().lower() == "yes")
+        stat_card(r1, 0, "Total Violations",  len(self.violations),  "Red light",         "#b71c1c")
+        stat_card(r1, 1, "Total Accidents",   len(self.accidents),   "All COLLISION",     "#e65100")
+        stat_card(r1, 2, "Traffic Events",    len(self.traffic),     "Combined log",      C_PRIMARY)
         stat_card(r1, 3, "Emergency Alerts",  notified,              "Notifications sent","#6a1b9a")
 
-        # ── Accidents & Violations by lane — SIDE-BY-SIDE DONUT CHARTS ───
+        # ── Accidents & Violations by lane ────────────────────────────────
         section("Accidents & Violations by Lane")
         side_row = ctk.CTkFrame(scroll, fg_color=C_WIN_BG)
         side_row.pack(fill="x", padx=20, pady=4)
@@ -379,7 +383,7 @@ class DashboardApp(ctk.CTk):
         ctk.CTkLabel(acc_panel, text="Accidents by Lane",
                      font=("Helvetica", 10, "bold"),
                      text_color=C_LABEL, anchor="w").pack(fill="x", pady=(0, 4))
-        acc_by_lane = Counter(r.get("lane","UNKNOWN") for r in self.accidents)
+        acc_by_lane = Counter(r.get("lane", "UNKNOWN") for r in self.accidents)
         draw_donut(acc_panel, dict(acc_by_lane), LANE_COLORS, LANE_NAMES)
 
         vio_panel = ctk.CTkFrame(side_row, fg_color=C_WIN_BG)
@@ -387,34 +391,38 @@ class DashboardApp(ctk.CTk):
         ctk.CTkLabel(vio_panel, text="Violations by Lane",
                      font=("Helvetica", 10, "bold"),
                      text_color=C_LABEL, anchor="w").pack(fill="x", pady=(0, 4))
-        vio_by_lane = Counter(r.get("lane","") for r in self.violations)
+        vio_by_lane = Counter(r.get("lane", "UNKNOWN") for r in self.violations)
         draw_donut(vio_panel, dict(vio_by_lane), LANE_COLORS, LANE_NAMES)
 
         # ── Peak violation hours ──────────────────────────────────────────
+        # Uses 'hour' column from violations CSV
         section("Peak Violation Hours")
-        vio_by_hour = Counter(r.get("hour","") for r in self.violations)
+        vio_by_hour = Counter(r.get("hour", "") for r in self.violations if r.get("hour"))
         top_hours   = dict(sorted(vio_by_hour.items(), key=lambda x: -x[1])[:8])
         hour_labels = {h: f"{h}:00" for h in top_hours}
         bar_chart(scroll, top_hours, {}, hour_labels, bar_color="#b71c1c")
 
         # ── Vehicle type breakdown ─────────────────────────────────────────
+        # Uses 'vehicle_type' from traffic_events CSV
         section("Vehicle Types in Traffic Events")
-        vtype = Counter(r.get("vehicle_type","UNKNOWN") for r in self.traffic)
+        vtype = Counter(r.get("vehicle_type", "UNKNOWN") for r in self.traffic)
         vtype_colors = {
-            "SMALL":"#1565c0","MEDIUM":"#2e7d32",
-            "LARGE":"#e65100","UNKNOWN":"#757575"
+            "SMALL":   "#1565c0",
+            "MEDIUM":  "#2e7d32",
+            "LARGE":   "#e65100",
+            "UNKNOWN": "#757575",
         }
         max_v  = max(vtype.values()) if vtype else 1
         vt_row = card_row(scroll, len(vtype))
         for i, (vt, cnt) in enumerate(sorted(vtype.items(), key=lambda x: -x[1])):
             c = ctk.CTkFrame(vt_row, fg_color=C_BG, corner_radius=10)
-            c.grid(row=0, column=i, padx=(0 if i==0 else 8,0), pady=4, sticky="ew")
+            c.grid(row=0, column=i, padx=(0 if i==0 else 8, 0), pady=4, sticky="ew")
             color = vtype_colors.get(vt, C_MUTED)
             top_r = ctk.CTkFrame(c, fg_color="transparent")
-            top_r.pack(fill="x", padx=12, pady=(12,4))
+            top_r.pack(fill="x", padx=12, pady=(12, 4))
             dot = ctk.CTkFrame(top_r, width=10, height=10,
                                corner_radius=5, fg_color=color)
-            dot.pack(side="left", padx=(0,6))
+            dot.pack(side="left", padx=(0, 6))
             dot.pack_propagate(False)
             ctk.CTkLabel(top_r, text=vt, font=("Helvetica", 10, "bold"),
                          text_color=C_PRIMARY).pack(side="left")
@@ -423,14 +431,15 @@ class DashboardApp(ctk.CTk):
             bar = ctk.CTkProgressBar(c, height=6, corner_radius=3,
                                       fg_color=C_DIVIDER, progress_color=color)
             bar.set(cnt / max_v)
-            bar.pack(fill="x", padx=12, pady=(4,12))
+            bar.pack(fill="x", padx=12, pady=(4, 12))
 
         # ── Accident duration stats ────────────────────────────────────────
+        # Uses 'duration' column from accidents CSV
         section("Accident Duration Distribution")
         durations = []
         for r in self.accidents:
             try:
-                durations.append(float(r.get("duration",0)))
+                durations.append(float(r.get("duration", 0)))
             except Exception:
                 pass
         if durations:
@@ -441,10 +450,26 @@ class DashboardApp(ctk.CTk):
                 elif d <= 5:  buckets["1–5s"] += 1
                 else:         buckets["> 5s"] += 1
             dur_colors = {
-                "0s (instant)":"#1565c0","< 1s":"#2e7d32",
-                "1–5s":"#fb8c00","> 5s":"#b71c1c"
+                "0s (instant)": "#1565c0",
+                "< 1s":         "#2e7d32",
+                "1–5s":         "#fb8c00",
+                "> 5s":         "#b71c1c",
             }
             bar_chart(scroll, buckets, dur_colors)
+
+        # ── Accident type breakdown ────────────────────────────────────────
+        # Uses 'accident_type' column from accidents CSV
+        section("Accident Types")
+        acc_types = Counter(r.get("accident_type", "UNKNOWN") for r in self.accidents)
+        if acc_types:
+            bar_chart(scroll, dict(acc_types), {}, bar_color="#e65100")
+
+        # ── Violation type breakdown ───────────────────────────────────────
+        # Uses 'violation_type' column from violations CSV
+        section("Violation Types")
+        vio_types = Counter(r.get("violation_type", "UNKNOWN") for r in self.violations)
+        if vio_types:
+            bar_chart(scroll, dict(vio_types), {}, bar_color="#b71c1c")
 
     # ── Generic table page ────────────────────────────────────────────────
     def _build_table(self, parent, data, columns, row_fn, accent=C_PRIMARY):
@@ -474,7 +499,7 @@ class DashboardApp(ctk.CTk):
         for col, w in zip(columns, col_widths):
             ctk.CTkLabel(col_hdr, text=col, font=("Helvetica", 9, "bold"),
                          text_color=C_LABEL, anchor="w", width=w).pack(
-                side="left", padx=(10,0))
+                side="left", padx=(10, 0))
 
         ctk.CTkFrame(parent, fg_color=C_DIVIDER, height=1).pack(fill="x")
 
@@ -502,7 +527,7 @@ class DashboardApp(ctk.CTk):
                     tc = accent if i == 2 else (C_MUTED if i == 0 else C_SECONDARY)
                     ctk.CTkLabel(rf, text=str(cell), font=("Helvetica", 9),
                                  text_color=tc, anchor="w", width=w).pack(
-                        side="left", padx=(10,0))
+                        side="left", padx=(10, 0))
                 row_widgets.append(rf)
 
         render()
@@ -511,10 +536,24 @@ class DashboardApp(ctk.CTk):
     @staticmethod
     def _col_weights(columns):
         """Approximate fixed widths per column based on typical content."""
-        defaults = {"#":40,"Time":80,"Timestamp":140,"Type":160,"Lane":70,
-                    "Vehicle":80,"Vehicle Type":90,"Vehicle IDs":100,
-                    "Speed (km/h)":90,"Signal":60,"Duration (s)":90,
-                    "Notified":70,"Description":340,"Events":60}
+        defaults = {
+            "#":            40,
+            "Time":         80,
+            "Timestamp":   140,
+            "Type":        150,
+            "Lane":         70,
+            "Vehicle":      80,
+            "Vehicle Type": 90,
+            "Vehicle IDs": 110,
+            "Count":        55,
+            "Plate":        95,
+            "Speed (km/h)": 90,
+            "Signal":       60,
+            "Duration (s)": 90,
+            "Notified":     70,
+            "Description": 320,
+            "Events":       60,
+        }
         return [defaults.get(c, 120) for c in columns]
 
 
