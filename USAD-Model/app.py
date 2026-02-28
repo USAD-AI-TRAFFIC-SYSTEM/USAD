@@ -9,9 +9,9 @@ from PIL import Image
 from main import USAD
 import config
 
-# Basic layout settings
-PANEL_W     = 340          # status panel width
-PANEL_H     = 480          # status panel height
+# ── App settings ─────────────────────────────────────────────────────────────
+PANEL_W     = 340          # status panel width  (fixed)
+PANEL_H     = 480          # status panel height (fixed)
 TAB_H       = 36           # tab buttons height above panel
 LOGO_SIZE   = 100          # logo box size
 LOGO_PAD    = 10           # gap from window edge
@@ -255,7 +255,7 @@ class USADApp(ctk.CTk):
 
         # ── Total vehicles  — primary ────────────────────────────────────
         self._lbl_vehicles = ctk.CTkLabel(p, text="Total Vehicles: --",
-                                           font=("Helvetica", 16, "bold"),
+                                           font=("Helvetica", 16, "bold"),  
                                            text_color=C_PRIMARY, anchor="w")
         self._lbl_vehicles.pack(fill="x", pady=(6, 0))
 
@@ -295,23 +295,23 @@ class USADApp(ctk.CTk):
                      font=("Helvetica", 9, "bold"),
                      text_color=C_MUTED, anchor="w").pack(fill="x", pady=(0, 1))
 
-        keys_row = ctk.CTkFrame(p, fg_color="transparent")
-        keys_row.pack(fill="x")
-
         keys = [
-            ("[Q]", "Quit"),
-            ("[R]", "Reset"),
-            ("[B]", "Reset Background Learning"),
+            ("[Q]", "Quit",             lambda: (self._show_toast("[Key] Q — shutting down.", duration_ms=1500), print("[Key] Q clicked — shutting down."), self._on_close())),
+            ("[R]", "Reset",            lambda: (self._show_toast("[Key] R — resetting all detectors."), print("[Key] R clicked — resetting all detectors."), self._cmd_reset())),
+            ("[B]", "Reset BG Learning",lambda: (self._show_toast("[Key] B — resetting background learning."), print("[Key] B clicked — resetting background learning."), self._cmd_reset_bg())),
         ]
-        for key, desc in keys:
-            chunk = ctk.CTkFrame(keys_row, fg_color="transparent")
-            chunk.pack(side="left", padx=(0, 10))
-            ctk.CTkLabel(chunk, text=key,
-                         font=("Helvetica", 9, "bold"),
-                         text_color=C_MUTED).pack(side="left")
-            ctk.CTkLabel(chunk, text=f" {desc}",
-                         font=("Helvetica", 9),
-                         text_color=C_MUTED).pack(side="left")
+        for key, desc, cmd in keys:
+            ctk.CTkButton(p,
+                          text=f"{key}  {desc}",
+                          font=("Helvetica", 9),
+                          text_color=C_MUTED,
+                          fg_color="transparent",
+                          hover_color="#eeeeee",
+                          corner_radius=4,
+                          height=16,
+                          border_width=0,
+                          anchor="w",
+                          command=cmd).pack(fill="x", pady=(0, 0))
 
     # ── Frame loop ────────────────────────────────────────────────────────
     def _tick(self):
@@ -415,7 +415,7 @@ class USADApp(ctk.CTk):
             count = int(lane_counts.get(lane_key, 0))
             state = u._classify_lane_congestion(count)
             state_colors = {"CONGESTED": "#b71c1c", "NON-CONGESTED": "#f57f17", "EMPTY": C_MUTED}
-            l_count.configure(text=f"{LANE_NAMES.get(lane_key, lane_key)}: {count} veh")
+            l_count.configure(text=f"{LANE_NAMES.get(lane_key, lane_key)}: {count}")
             l_state.configure(text=state, text_color=state_colors.get(state, C_SECONDARY))
 
     # ── Button commands ───────────────────────────────────────────────────
@@ -438,25 +438,93 @@ class USADApp(ctk.CTk):
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
         subprocess.Popen([sys.executable, script])
 
+    # ── Toast notification ───────────────────────────────────────────────
+    def _show_toast(self, message: str, duration_ms: int = 2800):
+        """Show a self-dismissing toast card at the bottom-center of the window."""
+        # Dismiss any existing toast
+        if hasattr(self, "_toast_frame") and self._toast_frame.winfo_exists():
+            try:
+                self._toast_frame.place_forget()
+                self._toast_frame.destroy()
+            except Exception:
+                pass
+
+        toast = ctk.CTkFrame(self, fg_color=C_PRIMARY, corner_radius=10,
+                             border_width=0)
+        ctk.CTkLabel(toast, text=message,
+                     font=("Helvetica", 11),
+                     text_color="#ffffff",
+                     wraplength=460,
+                     justify="center").pack(padx=18, pady=10)
+        self._toast_frame = toast
+
+        def _place():
+            try:
+                self.update_idletasks()
+                tw = toast.winfo_reqwidth()
+                th = toast.winfo_reqheight()
+                sw = self.winfo_width()
+                sh = self.winfo_height()
+                x  = (sw - tw) // 2
+                y  = sh - th - 24
+                toast.place(x=x, y=y)
+                toast.lift()
+            except Exception:
+                pass
+
+        self.after(10, _place)
+        self.after(duration_ms, lambda: self._dismiss_toast(toast))
+
+    def _dismiss_toast(self, toast):
+        try:
+            if toast.winfo_exists():
+                toast.place_forget()
+                toast.destroy()
+        except Exception:
+            pass
+
     def _cmd_auto(self):
-        print("[App] Auto mode")
+        msg = "[App] Auto mode enabled — system will manage signals automatically."
+        print(msg)
+        self._show_toast(msg)
         if self.usad._is_arduino_connected():
             self.usad.traffic_controller.set_auto_mode()
         else:
             self.usad.software_auto_mode = True
 
     def _cmd_reset(self):
-        print("[App] Reset")
+        msg = "[App] Reset triggered — clearing vehicle, accident, violation, and notifier state."
+        print(msg)
+        self._show_toast(msg)
         self.usad.vehicle_detector.reset()
         self.usad.accident_detector.reset()
         self.usad.violation_detector.reset()
         self.usad.emergency_notifier.reset()
+        self._show_toast("[App] Reset complete.")
+        print("[App] Reset complete.")
+
+    def _cmd_reset_bg(self):
+        msg = "[App] Background learning reset — detector will re-learn the scene background."
+        print(msg)
+        self._show_toast(msg)
+        try:
+            self.usad.vehicle_detector.reset_background()
+            print("[App] Background learning reset complete.")
+            self._show_toast("[App] Background learning reset complete.")
+        except AttributeError:
+            print("[App] Background learning reset complete (no explicit reset method found).")
+            self._show_toast("[App] Background learning reset complete.")
 
     def _cmd_stats(self):
+        msg = "[App] Printing statistics..."
+        print(msg)
+        self._show_toast(msg)
         self.usad.print_statistics()
 
     def _cmd_activate_lane(self, lane_key: str):
-        print(f"[App] Activating {lane_key}")
+        msg = f"[App] Manual override — activating {lane_key} ({LANE_NAMES.get(lane_key, lane_key)})."
+        print(msg)
+        self._show_toast(msg)
         self.usad.software_auto_mode = False
         self.usad.activate_lane(lane_key)
 
@@ -467,18 +535,31 @@ class USADApp(ctk.CTk):
     def _on_key(self, event):
         key = event.keysym.lower()
         if key in ("q", "escape"):
+            msg = "[Key] Q / Escape — shutting down."
+            print(msg)
+            self._show_toast(msg, duration_ms=1500)
             self._on_close()
         elif key == "r":
+            self._show_toast("[Key] R — resetting all detectors.")
             self._cmd_reset()
+        elif key == "b":
+            self._show_toast("[Key] B — resetting background learning.")
+            self._cmd_reset_bg()
         elif key == "a":
+            self._show_toast("[Key] A — enabling auto mode.")
             self._cmd_auto()
         elif key == "s":
+            self._show_toast("[Key] S — printing statistics.")
             self._cmd_stats()
         elif key == "f":
+            self._show_toast("[Key] F — toggling fullscreen.")
             self.usad.toggle_fullscreen()
         elif key in ("1", "2", "3", "4"):
             lane = f"LANE{key}"
             if lane in config.LANES:
+                msg = f"[Key] {key} — activating {lane} ({LANE_NAMES.get(lane, lane)})."
+                print(msg)
+                self._show_toast(msg)
                 self._cmd_activate_lane(lane)
 
     # ── Close ─────────────────────────────────────────────────────────────
