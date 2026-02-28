@@ -3,8 +3,8 @@
   Traffic Signal Controller
  
   Controls 4-lane traffic lights with AI model integration
-  - Green: 5 seconds
-  - Yellow: 3 seconds
+  - Green: 25 seconds
+  - Yellow: 4 seconds
   - Red: automatic (when other lanes are active)
  
   Pin Configuration:
@@ -45,8 +45,8 @@ const int LANE4_RED = 13;
 
 
 // ==================== TIMING CONSTANTS ====================
-const unsigned long GREEN_TIME = 5000;   // 5 seconds
-const unsigned long YELLOW_TIME = 3000;  // 3 seconds
+const unsigned long GREEN_TIME = 25000;  // 25 seconds
+const unsigned long YELLOW_TIME = 4000;  // 4 seconds
 
 
 // ==================== STATE VARIABLES ====================
