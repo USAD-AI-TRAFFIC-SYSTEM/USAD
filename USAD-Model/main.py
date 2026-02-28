@@ -109,9 +109,12 @@ class USAD:
         # Display settings
         self.is_fullscreen = False
 
+        # ── UI mode flag ─────────────────────────────────────────────────
+        # Set to False by app.py to suppress the OpenCV HUD overlay,
+        # since app.py renders all status info in its own CTk panel.
+        self.show_cv_panel = True
+
         # Detection/alert gating
-        # We keep running vehicle detection so we can re-enable immediately when a car appears,
-        # but we hide overlays and clear accident/violation alerts after a short no-car period.
         self._last_vehicle_seen_ts: float = time.time()
         self._no_car_idle_mode: bool = False
         
@@ -130,8 +133,6 @@ class USAD:
         """Initialize camera or video source"""
         print("\n[Camera] Initializing...")
 
-        # On Windows, some OpenCV builds cannot use DSHOW by index (0/1/2).
-        # Try multiple backends for robustness.
         source = config.CAMERA_SOURCE
         backends = [
             ("DSHOW", cv2.CAP_DSHOW),
@@ -152,12 +153,10 @@ class USAD:
             print("        Try closing other camera apps, or set CAMERA_SOURCE=1.")
             return False
         
-        # Set camera properties
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
         self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
         self.cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
         
-        # Warm up camera - read a few frames to stabilize
         print("[Camera] Warming up...")
         for i in range(10):
             ret, _ = self.cap.read()
@@ -178,12 +177,9 @@ class USAD:
         
         if self.traffic_controller.connect():
             print(f"[Arduino] ✓ Connected on {config.ARDUINO_PORT}")
-            
-            # Start in auto mode if configured
             if config.AUTO_MODE_DEFAULT:
                 self.traffic_controller.set_auto_mode()
                 print("[Arduino] ✓ Auto mode enabled")
-            
             return True
         else:
             print("[Arduino] ✗ Failed to connect")
@@ -192,12 +188,9 @@ class USAD:
     
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single frame"""
-        # Detect vehicles
         vehicles = self.vehicle_detector.detect_vehicles(frame)
 
         now = time.time()
-        # Consider a car "seen" only if there was a fresh detection / confirmed track update.
-        # Tracks can linger for a few seconds by design; this prevents stale boxes/alerts.
         if bool(getattr(self.vehicle_detector, "had_detections_this_frame", False)) or bool(
             getattr(self.vehicle_detector, "had_confirmed_updates_this_frame", False)
         ):
@@ -207,7 +200,6 @@ class USAD:
 
         enter_idle = (not vehicles) and ((now - float(self._last_vehicle_seen_ts)) >= no_car_clear_seconds)
         if enter_idle and not self._no_car_idle_mode:
-            # Clear lingering alerts/overlays when the scene is empty.
             self.vehicle_detector.reset()
             self.accident_detector.reset()
             self.violation_detector.reset()
@@ -215,14 +207,11 @@ class USAD:
         elif not enter_idle:
             self._no_car_idle_mode = False
         
-        # Get vehicle counts by lane
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane(include_intersection=True)
         lane_counts_for_control = {k: int(lane_counts.get(k, 0)) for k in config.LANES.keys()}
 
-        # Update traffic signal cycle (software simulation when Arduino is disconnected)
         self.update_signal_cycle(lane_counts_for_control)
         
-        # Detect accidents (skip when in idle mode)
         if self._no_car_idle_mode:
             accidents = []
             confirmed_accidents = []
@@ -230,27 +219,22 @@ class USAD:
             accidents = self.accident_detector.detect_accidents(vehicles, frame=frame)
             confirmed_accidents = self.accident_detector.get_confirmed_accidents()
         
-        # Handle emergency notifications for confirmed accidents
         for accident in confirmed_accidents:
             if not accident.notified:
                 notified = self.emergency_notifier.notify_accident(accident)
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        # Detect violations (skip when in idle mode)
         if self._no_car_idle_mode:
             new_violations = []
         else:
             new_violations = self.violation_detector.detect_violations(vehicles)
         
-        # Log new violations
         for violation in new_violations:
             self.event_logger.log_violation(violation)
             print(f"[VIOLATION] {violation.get_description()}", flush=True)
         
-        # License plate detection
         if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
-            # EasyOCR can be expensive; rate-limit attempts while preserving the feature.
             self._lp_frame_index += 1
             every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
             max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
@@ -273,11 +257,9 @@ class USAD:
                 for vehicle in vehicles:
                     if vehicle.license_plate:
                         continue
-
                     last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
                     if cooldown > 0 and (now_ts - last_ts) < cooldown:
                         continue
-
                     self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
                     result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
                     debug_info = dict(getattr(self.license_plate_detector, "last_debug_info", {}) or {})
@@ -296,7 +278,6 @@ class USAD:
                             f"[LP DEBUG] vehicle_id={vehicle.id} status=NO_READ reason={debug_info.get('status', 'unknown')} "
                             f"candidates={debug_info.get('candidate_count', 0)}"
                         )
-
                     attempts += 1
                     if attempts >= max_per_frame:
                         break
@@ -312,10 +293,7 @@ class USAD:
                     f"ocr_available={self.license_plate_detector.ocr_available}"
                 )
         
-        # Intelligent traffic control
         self.update_traffic_control(lane_counts_for_control, accidents)
-        
-        # Draw everything on frame
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
         
         return frame
@@ -324,7 +302,6 @@ class USAD:
         return bool(self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open)
 
     def _lane_order(self):
-        # Stable order for round-robin cycling
         return list(config.LANES.keys())
 
     def _get_next_lane(self, lane_key: str) -> str:
@@ -361,12 +338,10 @@ class USAD:
         if state == "NON-CONGESTED":
             delta = int(getattr(config, "ADAPTIVE_GREEN_REDUCE_SECONDS", 2))
             return max(min_green, min(max_green, base - max(0, delta)))
-        # EMPTY
         return min_green
 
     def _apply_signal_states(self, active_lane: str, phase: str):
         """Apply signal colors to violation detector (and UI)."""
-        # Active lane follows the phase; others are red.
         for lane in config.LANES.keys():
             if lane == active_lane:
                 self.violation_detector.set_traffic_signal(lane, phase)
@@ -380,12 +355,10 @@ class USAD:
 
         simulate = bool(getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True)) and not self.arduino_connected
         if not simulate:
-            # When Arduino is connected, sync the model's state with Arduino timing (config.GREEN_TIME, config.YELLOW_TIME)
             if self.software_auto_mode:
                 arduino_green_time = float(getattr(config, "GREEN_TIME", 25))
                 arduino_yellow_time = float(getattr(config, "YELLOW_TIME", 4))
 
-                # Ensure we have an active lane
                 if self.current_active_lane is None:
                     self.current_active_lane = self._lane_order()[0]
                     self.current_phase = "GREEN"
@@ -394,7 +367,6 @@ class USAD:
                     self._apply_signal_states(self.current_active_lane, "GREEN")
                     return
 
-                # Cycle in sync with Arduino's timing
                 if self.current_phase == "GREEN":
                     if now - self.phase_start_time >= arduino_green_time:
                         self.current_phase = "YELLOW"
@@ -402,38 +374,31 @@ class USAD:
                         self._apply_signal_states(self.current_active_lane, "YELLOW")
                 elif self.current_phase == "YELLOW":
                     if now - self.phase_start_time >= arduino_yellow_time:
-                        # Move to next lane (same order as Arduino)
                         next_lane = self._get_next_lane(self.current_active_lane)
                         self.current_active_lane = next_lane
                         self.current_phase = "GREEN"
                         self.phase_start_time = now
                         self.lane_green_duration = arduino_green_time
                         self._apply_signal_states(next_lane, "GREEN")
-            # When not in auto mode, lane switching is handled by manual activate_lane() calls
-            # Still keep violation detector signals in sync
             return
 
         if not self.software_auto_mode and self.current_active_lane is None:
-            # If user is in manual mode but nothing is active, pick a default.
             self.activate_lane(self._lane_order()[0])
             self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
             self._apply_signal_states(self.current_active_lane, "GREEN")
             return
 
-        # Ensure we always have an active lane
         if self.current_active_lane is None:
             self.activate_lane(self._lane_order()[0])
             self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
             self._apply_signal_states(self.current_active_lane, "GREEN")
             return
 
-        # Manual mode: keep current lane green (no cycling)
         if not self.software_auto_mode:
             self.current_phase = "GREEN"
             self._apply_signal_states(self.current_active_lane, "GREEN")
             return
 
-        # Auto mode: GREEN -> YELLOW -> next lane
         if self.current_phase == "GREEN":
             if now - self.phase_start_time >= float(self.lane_green_duration):
                 self.current_phase = "YELLOW"
@@ -453,18 +418,15 @@ class USAD:
         if not config.ENABLE_ADAPTIVE_TIMING:
             return
         
-        # Check for accidents - give priority to accident lanes
         if config.ENABLE_ACCIDENT_PRIORITY and accidents:
             for accident in accidents:
                 if accident.confirmed and accident.lane and accident.lane in config.LANES:
-                    # Clear the accident lane
                     if self.current_active_lane != accident.lane:
                         print(f"[AI] Accident detected in {accident.lane}, activating lane for clearance")
                         self.activate_lane(accident.lane)
                         self.lane_green_duration = config.ACCIDENT_PRIORITY_DURATION
                     return
         
-        # Adaptive timing based on congestion
         max_vehicles = 0
         congested_lane = None
         
@@ -473,29 +435,22 @@ class USAD:
                 max_vehicles = count
                 congested_lane = lane_key
         
-        # If a lane has congestion, extend its green duration (software simulation uses _compute_green_duration)
         if max_vehicles >= config.CONGESTION_THRESHOLD:
             if self.current_active_lane == congested_lane:
-                # Refresh duration for current green lane based on latest counts
                 self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
             elif self._is_arduino_connected():
-                # If Arduino is connected, we can still request lane activation
                 print(f"[AI] Congestion detected in {congested_lane} ({max_vehicles} vehicles)")
-                self.software_auto_mode = False  # Exit auto mode for congestion handling
+                self.software_auto_mode = False
                 self.activate_lane(congested_lane)
                 self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
         else:
-            # Congestion cleared - return to auto mode if we were in congestion mode
             if not self.software_auto_mode:
                 print(f"[AI] Congestion cleared (max vehicles: {max_vehicles}), returning to AUTO mode")
                 if self._is_arduino_connected():
                     self.traffic_controller.set_auto_mode()
-                    # Reset model state to sync with Arduino's auto cycling
-                    # Arduino starts from lane 0 (LANE1) when entering auto mode
                     self.current_active_lane = self._lane_order()[0]
                     self.current_phase = "GREEN"
                     self.phase_start_time = time.time()
-                    # Use Arduino's timing (config) when synced with Arduino
                     self.lane_green_duration = float(getattr(config, "GREEN_TIME", 25))
                     self._apply_signal_states(self.current_active_lane, "GREEN")
                 self.software_auto_mode = True
@@ -510,13 +465,11 @@ class USAD:
         self.current_phase = "GREEN"
         self.phase_start_time = time.time()
         
-        # Update violation detector
         self.violation_detector.set_traffic_signal(lane_key, "GREEN")
         for other_lane in config.LANES.keys():
             if other_lane != lane_key:
                 self.violation_detector.set_traffic_signal(other_lane, "RED")
         
-        # Send command to Arduino
         if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
             self.traffic_controller.activate_lane_by_name(lane_key)
     
@@ -541,9 +494,7 @@ class USAD:
         
         if not self._no_car_idle_mode:
             frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
-
             frame = self.accident_detector.draw_stopped_vehicles(frame, vehicles)
-
             frame = self.accident_detector.draw_accidents(frame)
 
             if config.SHOW_VIOLATIONS:
@@ -552,10 +503,13 @@ class USAD:
         if config.ENABLE_LICENSE_PLATE_DETECTION:
             for vehicle in vehicles:
                 if vehicle.license_plate:
-                    # Plate already drawn in vehicle drawing
                     pass
-        
-        frame = self.draw_status_panel(frame, vehicles, accidents, lane_counts)
+
+        # ── Only draw the OpenCV HUD when running standalone (main.py directly).
+        # ── When app.py sets self.show_cv_panel = False, this block is skipped
+        # ── and all status info is rendered by app.py's CTk panel instead.
+        if self.show_cv_panel:
+            frame = self.draw_status_panel(frame, vehicles, accidents, lane_counts)
         
         return frame
     
@@ -595,7 +549,6 @@ class USAD:
         cv2.putText(frame, lane_text, (x_left + 150, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
 
-        # Signal + congestion status
         active_lane = self.current_active_lane or "-"
         active_signal = self.violation_detector.current_signals.get(active_lane, "-") if self.current_active_lane else "-"
         now = time.time()
@@ -611,10 +564,7 @@ class USAD:
             frame,
             f"Active: {active_lane} | Signal: {active_signal} | Remaining: {remaining:.1f}s",
             (x_left, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.45,
-            (255, 255, 255),
-            1,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (255, 255, 255), 1,
         )
 
         y_offset += 20
@@ -624,19 +574,16 @@ class USAD:
             state = self._classify_lane_congestion(count)
             lane_states.append(f"{lane_key}:{state}")
 
-        # Intersection/center zone status (display-only; not part of signal control).
         if "INTERSECTION" in lane_counts:
             inter_count = int(lane_counts.get("INTERSECTION", 0))
             inter_state = self._classify_lane_congestion(inter_count)
             lane_states.append(f"INTERSECTION:{inter_state}")
+
         cv2.putText(
             frame,
             "Lane status: " + " | ".join(lane_states),
             (x_left, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (200, 200, 200),
-            1,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1,
         )
 
         y_offset += 18
@@ -647,47 +594,35 @@ class USAD:
             frame,
             "Adaptive green: " + " | ".join(durations),
             (x_left, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.4,
-            (200, 200, 200),
-            1,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1,
         )
         
         y_offset += 25
         
-        # Accidents
         accident_count = len([a for a in accidents if a.confirmed])
         accident_color = (0, 0, 255) if accident_count > 0 else (255, 255, 255)
         cv2.putText(frame, f"Accidents: {accident_count}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, accident_color, 1)
 
-        # Stopped/queued cars
         stopped_count = len(self.accident_detector.get_stopped_vehicle_ids())
         cv2.putText(
-            frame,
-            f"Stopped cars: {stopped_count}",
+            frame, f"Stopped cars: {stopped_count}",
             (x_left + 140, y_offset),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.5,
-            (0, 255, 255),
-            1,
+            cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 255, 255), 1,
         )
         
-        # Violations
         violation_stats = self.violation_detector.get_statistics()
         cv2.putText(frame, f"Violations: {violation_stats['total_violations']}", (x_left + 200, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (0, 165, 255), 1)
         
         y_offset += 25
         
-        # Emergency notifications
         notif_count = self.emergency_notifier.get_notification_count()
         cv2.putText(frame, f"Emergency Calls: {notif_count}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 0, 255), 1)
         
         y_offset += 30
         
-        # Controls
         cv2.putText(frame, "Controls: [Q]uit | [R]eset | [B]g reset | [A]uto | [1-4]Lanes | [S]tats | [F]ullscreen",
                    (x_left, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
@@ -705,11 +640,8 @@ class USAD:
     
     def handle_keyboard(self, key: int) -> bool:
         """Handle keyboard input"""
-        # Q - Quit
-        if key == ord('q') or key == ord('Q') or key == 27:  # ESC
+        if key == ord('q') or key == ord('Q') or key == 27:
             return False
-        
-        # R - Reset
         elif key == ord('r') or key == ord('R'):
             print("\n[System] Resetting...")
             self.vehicle_detector.reset(reset_background=False, verbose=False)
@@ -717,22 +649,16 @@ class USAD:
             self.violation_detector.reset()
             self.emergency_notifier.reset()
             print("[System] ✓ Reset complete")
-
-        # B - Reset background learning
         elif key == ord('b') or key == ord('B'):
             print("\n[System] Resetting background learning...")
             self.vehicle_detector.reset(reset_background=True, verbose=True)
             print("[System] ✓ Background learning reset")
-        
-        # A - Auto mode
         elif key == ord('a') or key == ord('A'):
             print("\n[Control] Switching to AUTO mode")
             if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
                 self.traffic_controller.set_auto_mode()
             else:
                 self.software_auto_mode = True
-        
-        # 1-4 - Manual lane activation
         elif key == ord('1'):
             print("\n[Control] Activating LANE1")
             self.software_auto_mode = False
@@ -749,15 +675,10 @@ class USAD:
             print("\n[Control] Activating LANE4")
             self.software_auto_mode = False
             self.activate_lane("LANE4")
-        
-        # S - Statistics
         elif key == ord('s') or key == ord('S'):
             self.print_statistics()
-        
-        # F - Toggle fullscreen
         elif key == ord('f') or key == ord('F'):
             self.toggle_fullscreen()
-        
         return True
     
     def print_statistics(self):
@@ -766,18 +687,15 @@ class USAD:
         print("CURRENT STATISTICS")
         print("="*70)
 
-        # Use event_logger analytics (CSV) so terminal matches the saved report
         v_analytics = self.event_logger.get_violation_analytics()
         a_analytics = self.event_logger.get_accident_analytics()
 
-        # Violations (from log files)
         total_v = v_analytics.get('total', 0)
         print(f"\nViolations: {total_v}")
         if v_analytics.get('by_type'):
             for vtype, count in v_analytics['by_type'].items():
                 print(f"  - {vtype}: {count}")
 
-        # Accidents (from log files)
         total_a = a_analytics.get('total', 0)
         emergency_n = a_analytics.get('emergency_notified', 0)
         print(f"\nActive Accidents (logged this session): {total_a}")
@@ -787,7 +705,6 @@ class USAD:
 
         print(f"\nEmergency Notifications: {emergency_n}")
 
-        # Generate full report (same numbers as above)
         print("\nGenerating full analytics report...")
         self.event_logger.generate_report()
 
@@ -796,7 +713,6 @@ class USAD:
     def toggle_fullscreen(self):
         """Toggle fullscreen mode"""
         self.is_fullscreen = not self.is_fullscreen
-        
         if self.is_fullscreen:
             cv2.setWindowProperty(config.DISPLAY_WINDOW_NAME, cv2.WND_PROP_FULLSCREEN, cv2.WINDOW_FULLSCREEN)
             print("\n[Display] Fullscreen mode: ON")
@@ -807,28 +723,17 @@ class USAD:
     def check_config_reload(self):
         """Check if config file has been modified and reload if needed"""
         current_time = time.time()
-        
-        # Only check every config_check_interval seconds
         if current_time - self.last_config_check < self.config_check_interval:
             return
-        
         self.last_config_check = current_time
-        
         try:
             current_mtime = os.path.getmtime(self.config_path)
-            
             if current_mtime != self.config_last_modified:
                 print("\n[Config] Detected changes in config.py, reloading...")
-                
-                # Reload the config module
                 importlib.reload(config)
-                
-                # Update the cached modification time
                 self.config_last_modified = current_mtime
-                
                 print("[Config] ✓ Configuration reloaded successfully")
                 print("[Config] Lane regions and settings updated")
-                
         except Exception as e:
             print(f"[Config] Error reloading config: {e}")
     
@@ -862,7 +767,6 @@ class USAD:
         
         try:
             while True:
-                # Start the grabber lazily (keeps capture responsive if processing spikes)
                 if self._grabber is None and self.cap is not None:
                     self._grabber = LatestFrameGrabber(self.cap)
                     self._grabber.start()
@@ -871,11 +775,9 @@ class USAD:
                 if self._grabber is not None:
                     ret, frame, ts = self._grabber.get_latest()
                 if not ret or frame is None:
-                    # Avoid tight spin if the camera momentarily stalls.
                     time.sleep(0.005)
                     continue
 
-                # FPS stabilization (EMA of instantaneous loop rate)
                 now_loop = time.time()
                 if self._last_loop_ts is not None:
                     dt = max(1e-6, now_loop - float(self._last_loop_ts))
@@ -891,10 +793,7 @@ class USAD:
                 self._last_loop_ts = now_loop
                 
                 processed_frame = self.process_frame(frame)
-                
                 self.check_config_reload()
-                
-                # Keep the existing counters for statistics.
                 self.frame_count += 1
                 
                 cv2.imshow(config.DISPLAY_WINDOW_NAME, processed_frame)
@@ -912,7 +811,6 @@ class USAD:
         
         finally:
             print("\n[System] Shutting down...")
-            
             self.print_statistics()
 
             if self._grabber is not None:
