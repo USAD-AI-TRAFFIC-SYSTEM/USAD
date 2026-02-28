@@ -11,7 +11,7 @@ import config
 
 # ── App settings ─────────────────────────────────────────────────────────────
 PANEL_W     = 340          # status panel width  (fixed)
-PANEL_H     = 400          # status panel height (fixed)
+PANEL_H     = 480          # status panel height (fixed)
 TAB_H       = 36           # tab buttons height above panel
 LOGO_SIZE   = 100          # logo box width & height (square)
 LOGO_PAD    = 10           # gap from window edge
@@ -63,7 +63,6 @@ class USADApp(ctk.CTk):
         ico_path = find_file("Logo 1.ico")
         if ico_path:
             self.iconbitmap(ico_path)
-
 
         # ── Instantiate USAD engine ──────────────────────────────────────
         self.usad = USAD()
@@ -289,7 +288,30 @@ class USADApp(ctk.CTk):
             l_state.grid(row=0, column=1, sticky="w")
             self._lane_rows[lane_key] = (l_count, l_state)
 
+        # ── Control keys hint ─────────────────────────────────────────────
+        divider()
 
+        ctk.CTkLabel(p, text="Control Keys",
+                     font=("Helvetica", 9, "bold"),
+                     text_color=C_MUTED, anchor="w").pack(fill="x", pady=(0, 1))
+
+        keys_row = ctk.CTkFrame(p, fg_color="transparent")
+        keys_row.pack(fill="x")
+
+        keys = [
+            ("[Q]", "Quit"),
+            ("[R]", "Reset"),
+            ("[B]", "Reset Background Learning"),
+        ]
+        for key, desc in keys:
+            chunk = ctk.CTkFrame(keys_row, fg_color="transparent")
+            chunk.pack(side="left", padx=(0, 10))
+            ctk.CTkLabel(chunk, text=key,
+                         font=("Helvetica", 9, "bold"),
+                         text_color=C_MUTED).pack(side="left")
+            ctk.CTkLabel(chunk, text=f" {desc}",
+                         font=("Helvetica", 9),
+                         text_color=C_MUTED).pack(side="left")
 
     # ── Frame loop ────────────────────────────────────────────────────────
     def _tick(self):
@@ -326,7 +348,6 @@ class USADApp(ctk.CTk):
         self._refresh_counter = getattr(self, '_refresh_counter', 0) + 1
         if self._refresh_counter >= 5:
             self._refresh_panel()
-
             self._refresh_counter = 0
 
         self.after(TICK_MS, self._tick)
