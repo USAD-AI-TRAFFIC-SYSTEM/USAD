@@ -1,23 +1,22 @@
-# USAD - Urban Smart Adaptive Dispatcher
+# USAD – Urban Smart Adaptive Detection
 
-An AI-powered traffic management system that uses computer vision to enhance road safety and optimize intersection flow through intelligent, data-driven control.
+USAD is an AI‑assisted traffic management system that uses classical computer vision and adaptive control to improve safety and throughput at urban intersections.
 
-## 🚦 Features
+It ingests a live video feed, detects and tracks vehicles, identifies dangerous situations (accidents and violations), and coordinates both simulated and physical traffic lights via Arduino.
+
+## 🚦 Key Features
 
 ### Core Capabilities
-- **Real-time Vehicle Detection**: Uses OpenCV background subtraction and contour detection to track vehicles at intersections
-- **Accident Detection**: Automatically detects stopped or collided vehicles
-- **Emergency Notifications**: Simulates SMS and call notifications to hotlines (#911) during accidents
-- **E.Y.E. (Eyeing Your Encounter)**: Detects unsafe and illegal vehicle behaviors including:
-  - Red-light violations
-  - Yellow-light abuse
-  - Illegal turns
-- **License Plate Recognition**: Detects and reads license plates using OCR for vehicle tracking
-- **Adaptive Traffic Control**: Dynamically adjusts traffic light timing based on congestion and accidents
-- **Arduino Integration**: Controls physical traffic lights via serial communication (4)
-- **Analytics & Logging**: Comprehensive event logging and analytics for traffic patterns
+- **Real‑time vehicle detection and tracking** – Background subtraction, color segmentation, and robust multi-frame tracking to follow vehicles through the intersection.
+- **Accident detection** – Differentiates between stopped vehicles and collisions, tracks accident duration, and suppresses duplicate alerts across frames.
+- **Emergency notifications** – Simulates SMS and phone-call style notifications to a configurable hotline (default `911`) for confirmed accidents, with cooldown control.
+- **E.Y.E. (Eyeing Your Encounter)** – Rule‑based violation detection for red‑light violations.
+- **License plate recognition (LPR)** – Uses EasyOCR in a dedicated worker thread so OCR never blocks the video loop, with template/Tesseract-based fallbacks and throttling to avoid frame drops.
+- **Adaptive traffic signal control** – Adjusts green time per lane based on measured congestion while honoring configurable minimum and maximum green durations.
+- **Arduino integration with graceful fallback** – Controls a physical 4‑lane traffic light controller via serial on `config.ARDUINO_PORT` (default `COM5`); automatically switches to software‑simulated signals when Arduino is not available.
+- **Structured logging and analytics** – Logs all events, violations, accidents, and recognized license plates to CSV; supports summary analytics and simple text reports.
 
-### System Architecture
+### High‑Level Architecture
 
 ```
 ┌─────────────────────────────────────────────────────────────┐
@@ -25,7 +24,7 @@ An AI-powered traffic management system that uses computer vision to enhance roa
 ├─────────────────────────────────────────────────────────────┤
 │                                                             │
 │  ┌───────────┐    ┌─────────────┐    ┌────────────────┐     │
-│  │  Camera   │───▶│   Vehicle   │───▶│   Accident     │    │
+│  │  Camera   │───▶│   Vehicle   │───▶│   Accident     │     │
 │  │  Input    │    │  Detector   │    │   Detector     │     │
 │  └───────────┘    └─────────────┘    └────────────────┘     │
 │                           │                    │            │
@@ -44,7 +43,7 @@ An AI-powered traffic management system that uses computer vision to enhance roa
 │                                                             │
 │                    ┌─────────────────────────────────┐      │
 │                    │    Traffic Controller           │      │
-│                    │  (Arduino COM4 Integration)     │      │
+│                    │     (Arduino Integration)       │      │
 │                    └─────────────────────────────────┘      │
 │                                   │                         │
 └───────────────────────────────────┼──────────────────────── ┘
@@ -58,296 +57,314 @@ An AI-powered traffic management system that uses computer vision to enhance roa
 ## 📋 Requirements
 
 ### Hardware
-- **Camera**: Webcam or CCTV with bird's-eye view of intersection
-- **Arduino**: Connected to COM4 with traffic light controller
-  - 4 lanes with Red, Yellow, Green LEDs each
-  - Pin configuration as per `arduino/traffic_controller.ino`
-- **Computer**: Windows PC with USB ports
+- **Camera** – Webcam or CCTV with a bird’s‑eye or high‑angle view of the intersection.
+- **Arduino** – Board connected to `config.ARDUINO_PORT` (default `COM5`) driving a 4‑lane traffic light rig:
+  - Each lane has red, yellow, and green LEDs.
+  - Pin configuration is defined in `arduino/traffic_controller.ino` (see "Arduino Traffic Controller" below).
+- **Host computer** – Windows PC with a USB port for the Arduino and sufficient CPU for OpenCV + EasyOCR.
 
 ### Software
-- Python 3.8 or higher
-- Arduino IDE (for uploading traffic controller sketch)
-- Tesseract OCR (for license plate detection)
+- Python 3.8 or later
+- Arduino IDE (for compiling and uploading the traffic‑controller sketch)
+- Tesseract OCR (optional; used by some plate‑recognition paths when configured)
 
 ## 🚀 Installation
 
-### 1. Clone the Repository
+> **Note**: All commands assume your working directory is the repository root (`USAD`).
+
+### 1. Clone the repository
+
 ```bash
 git clone https://github.com/USAD-AI-TRAFFIC-SYSTEM/USAD--AI-TRAFFIC-SYSTEM.git
 cd USAD
 ```
 
-### 2. Install Python Dependencies
+### 2. Create and activate a virtual environment
 
-**⚠️ IMPORTANT: Make sure you're in the USAD root directory (not USAD-Model) throughout this process**
+**Windows (PowerShell):**
 
-#### Windows (PowerShell/Command Prompt):
 ```bash
-# Create virtual environment in the USAD root directory
 python -m venv venv
-
-# Activate the virtual environment
-.\venv\Scripts\Activate.ps1
-
-# Install dependencies from the root directory
-pip install -r requirements.txt
-
-# Run the application
-cd USAD-Model
-..\venv\Scripts\python.exe main.py
+./venv/Scripts/Activate.ps1
 ```
 
-#### Linux/Mac:
+**Linux / macOS:**
+
 ```bash
 python3 -m venv venv
 source venv/bin/activate
+```
+
+### 3. Install Python dependencies
+
+From the `USAD` root directory:
+
+```bash
 pip install -r requirements.txt
-cd USAD-Model
-python main.py
 ```
 
-### 3. Install Tesseract OCR (Optional for License Plates)
-Download and install from: https://github.com/tesseract-ocr/tesseract
+### 4. Install Tesseract OCR (optional, for LPR)
 
-After installation, update the path in `license_plate_detector.py` if needed:
+If you want license‑plate OCR:
+- Download and install Tesseract from: https://github.com/tesseract-ocr/tesseract
+- If Tesseract is not on your PATH, set the executable path in `USAD-Model/license_plate_detector.py`:
+
 ```python
-pytesseract.pytesseract.tesseract_cmd = r'C:\Program Files\Tesseract-OCR\tesseract.exe'
+pytesseract.pytesseract.tesseract_cmd = r"C:\\Program Files\\Tesseract-OCR\\tesseract.exe"
 ```
 
-### 4. Upload Arduino Sketch
-1. Open `arduino/traffic_controller.ino` in Arduino IDE
-2. Connect Arduino to COM4
-3. Upload the sketch to the Arduino
+### 5. Upload the Arduino sketch
 
-### 5. Configure Camera
-Edit `config.py` to set your camera source:
+1. Open `arduino/traffic_controller.ino` in the Arduino IDE.
+2. In `USAD-Model/config.py`, ensure `ARDUINO_PORT` matches the COM port used by your board (default `COM5`).
+3. Select the correct board and port in the Arduino IDE.
+4. Upload the sketch to the Arduino.
+
+### 6. Configure the camera source
+
+Edit `USAD-Model/config.py` and set:
+
 ```python
-CAMERA_SOURCE = 0  # 0 for webcam, or path to video file
+CAMERA_SOURCE = 0  # 0 for default webcam, or a video file path
 ```
 
-## 🎮 Usage
+You can also adjust `CAMERA_WIDTH`, `CAMERA_HEIGHT`, and `CAMERA_FPS` if needed.
 
-### Running the System
+## ⚙️ Configuration Overview
+
+Most runtime behavior is controlled via `USAD-Model/config.py`:
+
+- **Camera and geometry**
+  - `CAMERA_SOURCE`, `CAMERA_WIDTH`, `CAMERA_HEIGHT`, `CAMERA_FPS`
+  - `LANES` and `INTERSECTION_CENTER` polygons that define lane regions and the central box
+- **Traffic signal timing**
+  - `GREEN_TIME`, `YELLOW_TIME`, `RED_TIME`
+  - `MIN_GREEN_TIME`, `MAX_GREEN_TIME`
+  - `ENABLE_ADAPTIVE_TIMING`, `SIM_CONGESTED_CARS`, `SIM_NON_CONGESTED_CARS`
+- **Arduino / controller**
+  - `ARDUINO_PORT`, `ARDUINO_BAUDRATE`, `SIMULATE_SIGNALS_WHEN_NO_ARDUINO`
+  - `AUTO_MODE_DEFAULT` (start in automatic lane cycling)
+- **Detection & tracking**
+  - Vehicle size, color, and motion thresholds (`MIN_VEHICLE_AREA`, `MAX_VEHICLE_AREA`, `CAR_COLOR_RANGES`, etc.)
+  - Stability and smoothing parameters for tracks and collisions
+- **Violation detection (E.Y.E.)**
+  - `RED_LIGHT_SPEED_THRESHOLD`, `YELLOW_ABUSE_SPEED_THRESHOLD`, `YELLOW_SAFE_DISTANCE`
+  - `ENABLE_ILLEGAL_TURN`, `TURN_ANGLE_THRESHOLD`, `ILLEGAL_TURN_FRAMES`
+- **License plate recognition**
+  - `ENABLE_LICENSE_PLATE_DETECTION`, ROI and aspect‑ratio thresholds
+  - OCR cadence and throttling: `LP_DETECT_EVERY_N_FRAMES`, `LP_MAX_VEHICLES_PER_FRAME`, `LP_PER_VEHICLE_COOLDOWN_SECONDS`
+  - Tesseract configuration: `TESSERACT_CMD`, `TESSERACT_CONFIG`
+- **Logging and analytics**
+  - `LOG_DIRECTORY` (defaults to `USAD-Model/logs`)
+  - Filenames for `EVENT_LOG_FILE`, `VIOLATION_LOG_FILE`, `ACCIDENT_LOG_FILE`
+  - Analytics windows and thresholds.
+
+## 🎮 Running the System
+
+From the `USAD` root (with the virtual environment activated):
+
 ```bash
 cd USAD-Model
 python main.py
 ```
 
-### OCR Smoke Test
-Run this quick check to confirm license-plate OCR is active and can read synthetic plate probes:
+If the camera and configuration are valid, a window titled “USAD - AI Traffic Management System” will open and start processing frames.
+
+### OCR smoke test (optional)
+
+To quickly verify that license‑plate OCR works and can read synthetic test plates:
+
 ```bash
 cd USAD-Model
 python ocr_smoke_test.py
 ```
 
-### Keyboard Controls
-- **Q** or **ESC**: Quit application
-- **R**: Reset system (clear all tracked vehicles and events)
-- **A**: Switch to automatic cycling mode
-- **1-4**: Manually activate specific lanes (Lane 1-4)
-- **S**: Print statistics and generate analytics report
+The script prints pass/fail status and confidence for several synthetic plate images.
 
-### Configuration
-Edit `config.py` to customize:
-- Lane regions and stop lines
-- Detection thresholds
-- Timing parameters
-- Arduino port settings
-- Camera settings
-- Feature toggles
+### Keyboard controls
 
-## 📊 Output & Analytics
+While the main window is focused:
 
-### Logged Data
-All events are logged to CSV files in the `logs/` directory:
-- `traffic_events.csv`: All traffic events
-- `violations.csv`: Detailed violation records
-- `accidents.csv`: Accident records with emergency notifications
+- `Q` or `ESC` – Quit the application
+- `R` – Reset the system (clears tracked vehicles and active events)
+- `A` – Switch to automatic lane‑cycling mode
+- `S` – Print statistics and generate an analytics report
 
-### Analytics Reports
-Press **S** during operation or check `logs/analytics_report.txt` for:
-- Total violations by type and lane
-- High-risk intersections (3x+ violations)
+## 📊 Data, Logs, and Analytics
+
+### Runtime logs
+
+At runtime, CSV logs are written to `USAD-Model/logs/` (the directory is created if it does not exist):
+
+- `traffic_events.csv` – All high‑level events (violations, accidents, notifications) with timestamps and descriptions.
+- `violations.csv` – Detailed per‑violation records: lane, type, speed, license plate, and coordinates.
+- `accidents.csv` – Confirmed accidents with duration, lane, involved vehicles, and whether an emergency notification was issued.
+- `license_plates.csv` – Successfully recognized license plates along with detection confidence and location.
+
+### Analytics reports
+
+When you press `S` during operation, the system computes aggregated statistics and writes a human‑readable report to:
+
+- `USAD-Model/logs/analytics_report.txt`
+
+The report includes, for the configured time window:
+
+- Total violations by type and by lane
+- High‑risk lanes (those with ≥3× the average violation count)
 - Peak violation hours
-- Accident statistics
-- Emergency notification count
-
-### Sample Analytics Output
-```
-======================================================================
-USAD TRAFFIC ANALYTICS REPORT
-Generated: 2026-01-22 14:30:00
-======================================================================
-
-VIOLATION STATISTICS
-----------------------------------------------------------------------
-Total Violations: 47
-
-By Type:
-  - RED_LIGHT_VIOLATION: 18
-  - YELLOW_ABUSE: 12
-  - ILLEGAL_TURN: 17
-
-High-Risk Lanes (3x+ violations):
-  - LANE3: 21 violations (3.5x average)
-
-Peak Violation Hours:
-  - 17:00: 15 violations
-  - 8:00: 12 violations
-```
+- Accident counts and durations
+- Emergency‑notification counts
 
 ## 🔧 Arduino Traffic Controller
 
-### Pin Configuration
+### Pin configuration
+
+The default sketch expects the following LED wiring:
+
 ```
-Lane 1 (North): Green=2,  Yellow=3,  Red=4
-Lane 2 (South): Green=5,  Yellow=6,  Red=7
-Lane 3 (East):  Green=8,  Yellow=9,  Red=10
-Lane 4 (West):  Green=11, Yellow=12, Red=13
+Lane 1 (North): Green = 2,  Yellow = 3,  Red = 4
+Lane 2 (South): Green = 5,  Yellow = 6,  Red = 7
+Lane 3 (East):  Green = 8,  Yellow = 9,  Red = 10
+Lane 4 (West):  Green = 11, Yellow = 12, Red = 13
 ```
 
-### Serial Commands
-The Python system sends these commands to Arduino:
-- `LANE1`: Activate Lane 1 (North)
-- `LANE2`: Activate Lane 2 (South)
-- `LANE3`: Activate Lane 3 (East)
-- `LANE4`: Activate Lane 4 (West)
-- `AUTO`: Return to automatic cycling mode
+Update `arduino/traffic_controller.ino` if you wire your hardware differently.
 
-### Timing
-- Green Light: 5 seconds
-- Yellow Light: 3 seconds
-- Red Light: Automatic (when other lanes are active)
+### Serial protocol
+
+The Python controller sends simple text commands over serial:
+
+- `LANE1` – Activate Lane 1 (North)
+- `LANE2` – Activate Lane 2 (South)
+- `LANE3` – Activate Lane 3 (East)
+- `LANE4` – Activate Lane 4 (West)
+- `AUTO` – Return to automatic lane‑cycling mode
+
+The sketch is responsible for translating these into LED sequences (green → yellow → red) using the configured timing.
+
+### Timing and adaptive control
+
+Signal timing is driven by parameters in `config.py`:
+
+- `GREEN_TIME` – Base green duration per lane (default 25 seconds)
+- `YELLOW_TIME` – Yellow duration (default 4 seconds)
+- `MIN_GREEN_TIME`, `MAX_GREEN_TIME` – Bounds for adaptive adjustments
+
+The adaptive controller uses per‑lane vehicle counts to extend green time for congested lanes and shorten it for lightly loaded lanes, staying within these bounds while ensuring fair rotation.
+
+If the Arduino is disconnected or cannot be opened on `ARDUINO_PORT`, USAD automatically enters **simulation mode** and maintains an internal model of signal states without driving hardware.
 
 ## 🎯 E.Y.E. Violation Detection
 
-The **Eyeing Your Encounter (E.Y.E.)** system uses classical computer vision (no machine learning) to detect:
+The **Eyeing Your Encounter (E.Y.E.)** subsystem is implemented in `USAD-Model/violation_detector.py` and uses lane geometry, vehicle trajectories, and current signal states to flag unsafe behavior.
 
-### Red Light Violations
-- Detects vehicles crossing stop line while signal is red
-- Requires minimum speed threshold to avoid false positives
-- Tracks vehicle trajectory across stop line
+### Red‑light violations
 
-### Yellow Light Abuse
-- Detects vehicles speeding through yellow lights
-- Calculates if vehicle could have safely stopped
-- Uses speed and distance thresholds
+- Each lane has a configured stop line in `config.LANES`.
+- When the signal for a lane is **RED**, the system checks whether a vehicle’s tracked path crosses the stop line.
+- A minimum speed threshold (`RED_LIGHT_SPEED_THRESHOLD`) prevents slow, creeping movements from being misclassified.
 
-### Illegal Turns
-- Analyzes vehicle direction vs. lane direction
-- Detects turns exceeding angle threshold
-- Confirms over multiple frames
+### Yellow‑light abuse
+
+- When a lane is **YELLOW**, USAD estimates whether the vehicle could have safely stopped before the stop line.
+- Vehicles that are still far from the line (`YELLOW_SAFE_DISTANCE`) but proceed at high speed (`YELLOW_ABUSE_SPEED_THRESHOLD`) are flagged as yellow‑light abuse.
 
 ## 🚨 Emergency Notification System
 
-When an accident is detected and confirmed:
-1. **SMS Simulation**: Displays formatted emergency SMS
-2. **Call Simulation**: Simulates emergency hotline call (#911)
-3. **Event Logging**: Records notification in accident log
-4. **Cooldown**: Prevents spam notifications (60-second cooldown)
+The emergency‑notification pipeline, implemented in `USAD-Model/emergency_notifier.py`, is triggered only for **confirmed** accidents.
 
-### Sample Emergency Notification
-```
-╔══════════════════════════════════════════════════════════════╗
-║             EMERGENCY ACCIDENT NOTIFICATION                  ║
-╠══════════════════════════════════════════════════════════════╣
-║ Time: 2026-01-22 14:25:30                                    ║
-║ Hotline: 911                                                 ║
-║                                                              ║
-║ ACCIDENT DETAILS:                                            ║
-║ - Type: COLLISION                                            ║
-║ - Location: North Lane                                       ║
-║ - Coordinates: (640, 360)                                    ║
-║ - Vehicles Involved: 2                                       ║
-║ - Vehicle IDs: 123, 456                                      ║
-║                                                              ║
-║ IMMEDIATE RESPONSE REQUIRED                                  ║
-╚══════════════════════════════════════════════════════════════╝
-```
+When an accident is confirmed:
+
+1. **SMS simulation** – A formatted text block is printed to the console with timestamp, hotline, lane, coordinates, and involved vehicle IDs.
+2. **Call simulation** – A second block simulates placing a phone call to `EMERGENCY_HOTLINE` (default `911`), summarizing the incident.
+3. **Event logging** – The accident is recorded to `accidents.csv` and to the general `traffic_events.csv` log.
+4. **Cooldown enforcement** – `NOTIFICATION_COOLDOWN` (default 60 seconds) prevents repeated notifications for the same accident.
 
 ## 🎨 Visual Interface
 
-The system displays real-time video with overlays:
-- **Vehicle Tracking**: Bounding boxes with IDs and types
-- **Lane Regions**: Color-coded lane boundaries
-- **Stop Lines**: Yellow lines marking traffic signal positions
-- **Accidents**: Red cross markers with alerts
-- **Violations**: Orange star markers with labels
-- **License Plates**: Yellow boxes with OCR text
-- **Status Panel**: System stats, FPS, counts, controls
+The main OpenCV window renders a composite overlay on top of the camera feed:
+
+- **Vehicle tracking** – Bounding boxes labeled with stable IDs and inferred vehicle type.
+- **Lane regions and stop lines** – Color‑coded lane polygons and yellow stop lines for each approach.
+- **Accident markers** – Highlighted overlays for detected stopped vehicles and collisions.
+- **Violation markers** – Annotation for red‑light.
+- **License plates** – Bounding boxes and text labels for recognized plates when OCR is enabled.
+- **Status panel** – Per‑lane counts, active lane and phase, FPS, and summary counters.
 
 ## 📝 System Behavior
 
-### Adaptive Traffic Control
-- **Congestion Detection**: Extends green time for lanes with 5+ vehicles
-- **Accident Priority**: Gives extra time to accident lanes for clearance
-- **Fair Distribution**: Maintains balanced timing across all lanes
+### Adaptive traffic control
 
-### Vehicle Classification
-Based on contour area:
-- **SMALL**: 800-2500 px² (Motorcycles, small cars)
-- **MEDIUM**: 2500-6000 px² (Sedans, SUVs)
-- **LARGE**: 6000-15000 px² (Trucks, buses)
+- **Congestion‑aware green times** – Lanes with more vehicles receive longer greens; lightly loaded lanes use shorter phases within `MIN_GREEN_TIME` and `MAX_GREEN_TIME`.
+- **Accident resilience** – Accident detection can influence timing (e.g., extended clearance windows) depending on configuration.
+- **Fairness** – Round‑robin lane selection ensures that no lane starves even under asymmetrical demand.
 
 ## 🐛 Troubleshooting
 
-### ModuleNotFoundError: No module named 'cv2' (or other packages)
-This occurs when packages are installed in the system Python but not in the virtual environment.
+### Python packages not found (e.g., `ModuleNotFoundError: No module named 'cv2'`)
 
-**Solution:**
-1. Make sure you're in the USAD root directory (not USAD-Model)
-2. Ensure your virtual environment is activated:
-   - Windows: `.\venv\Scripts\Activate.ps1`
-   - Linux/Mac: `source venv/bin/activate`
-3. Reinstall dependencies in the venv:
+This usually indicates that dependencies were installed into a different Python environment than the one you are using.
+
+1. Ensure you are in the `USAD` root directory.
+2. Activate the virtual environment:
+   - Windows: `./venv/Scripts/Activate.ps1`
+   - Linux/macOS: `source venv/bin/activate`
+3. Reinstall dependencies:
+
    ```bash
    pip install -r requirements.txt
    ```
-4. On Windows, if `python main.py` still fails, explicitly use the venv's Python:
+
+4. On Windows, if `python main.py` still fails, run explicitly with the venv Python:
+
    ```bash
    cd USAD-Model
-   ..\venv\Scripts\python.exe main.py
+   ../venv/Scripts/python.exe main.py
    ```
 
-### Arduino Not Connecting
-- Verify Arduino is connected to COM4
-- Check if port is in use by another application
-- Try different USB port
-- System will run in simulation mode if Arduino unavailable
+### Arduino not connecting
 
-### Camera Not Opening
-- Verify `CAMERA_SOURCE` in `config.py`
-- Try different camera index (0, 1, 2, etc.)
-- Check camera permissions
+- Confirm `ARDUINO_PORT` in `USAD-Model/config.py` matches your actual COM port (e.g., `COM5`).
+- Ensure no other application is using the same serial port.
+- Try a different USB cable or port.
+- If connection fails, USAD automatically runs in **simulation mode**; hardware signals will not change, but the software model and analytics still function.
 
-### Poor Vehicle Detection
-- Adjust `BACKGROUND_THRESHOLD` in `config.py`
-- Ensure good lighting conditions
-- Calibrate lane regions for your camera angle
-- Modify `MIN_VEHICLE_AREA` and `MAX_VEHICLE_AREA`
+### Camera not opening
 
-### License Plate Not Detected
-- Ensure Tesseract is installed correctly
-- Adjust plate size thresholds in `config.py`
-- Check `TESSERACT_CONFIG` string
-- Works best with clear, frontal vehicle views
+- Verify `CAMERA_SOURCE` in `USAD-Model/config.py` (e.g., 0, 1, 2, or a video file path).
+- Close any other application that may be using the same camera.
+- Try alternate capture backends or another camera index if your system has multiple devices.
+
+### Weak or noisy vehicle detection
+
+- Adjust `BACKGROUND_THRESHOLD` and related foreground‑mask parameters in `config.py`.
+- Ensure the scene has adequate, stable lighting.
+- Refine lane regions and intersection polygons so that they match your camera view.
+- Tune `MIN_VEHICLE_AREA`, `MAX_VEHICLE_AREA`, and the color‑range settings for your specific vehicles.
+
+### License plates not detected or low confidence
+
+- Confirm EasyOCR is installed (via `pip install easyocr`) and that Tesseract, if used, is installed and accessible.
+- Tune plate size and aspect‑ratio limits (`LP_MIN_WIDTH`, `LP_MAX_WIDTH`, `LP_MIN_HEIGHT`, `LP_MAX_HEIGHT`).
+- Verify `TESSERACT_CMD` and `TESSERACT_CONFIG` if relying on Tesseract.
+- Use higher‑resolution video or adjust camera placement so plates are clearer and less oblique.
 
 ## 📄 License
 
-This project is open-source and available under the MIT License.
+This project is open source and distributed under the MIT License.
 
 ## 👥 Contributors
 
-USAD-AI-TRAFFIC-SYSTEM Team
+USAD‑AI‑TRAFFIC‑SYSTEM Team
 
 ## 🤝 Contributing
 
-Contributions are welcome! Please feel free to submit pull requests or open issues.
+Contributions are welcome. Please open an issue to discuss significant changes before submitting a pull request.
 
 ## 📧 Contact
 
-For questions or support, please open an issue on GitHub.
+For questions, bug reports, or feature requests, please open an issue on GitHub.
 
 ---
 
-**USAD** - Making intersections safer and smarter with AI 🚦✨
+**USAD** – Making intersections safer and smarter with AI 🚦✨

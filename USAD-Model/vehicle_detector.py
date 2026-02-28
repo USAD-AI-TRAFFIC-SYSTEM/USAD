@@ -238,8 +238,6 @@ class Vehicle:
             max(1, int(round(float(rh)))),
         )
 
-        # Smoothing reduces jitter but can lag when cars are close.
-        # stronger stabilization to prevent rapid flicker from segmentation changes.
         base_alpha = float(getattr(config, "TRACK_SMOOTHING_ALPHA", 0.0) or 0.0)
         base_alpha = max(0.0, min(0.95, base_alpha))
 
@@ -247,9 +245,6 @@ class Vehicle:
         bbox_alpha = float(getattr(config, "TRACK_BBOX_SMOOTHING_ALPHA", base_alpha) or base_alpha)
         bbox_alpha = max(0.0, min(0.95, bbox_alpha))
 
-        # Startup stabilization: newly created tracks (often ID 1) tend to jitter
-        # for the first few frames due to segmentation noise + minimal history.
-        # This only affects bbox/center smoothing, not detection/accident criteria.
         try:
             seen_frames_now = int(getattr(self, "seen_frames", 1) or 1)
         except Exception:
@@ -318,28 +313,20 @@ class Vehicle:
         sb = self._smooth_bbox
         new_bbox = (int(sb[0]), int(sb[1]), int(sb[2]), int(sb[3]))
 
-        # Hard-anchor: never allow the tracked bbox to drift far from the latest detection.
         # This prevents "flying away" caused by stale smoothing or a brief mismatch.
         max_det_dev = int(getattr(config, "TRACK_BBOX_MAX_DEVIATION_FROM_DET_PX", 14) or 0)
         max_det_dev = max(0, min(200, max_det_dev))
         if stability_boost and max_det_dev > 0:
-            # Allow a bit more deviation from raw detections when crowded/colliding
-            # so smoothing can absorb segmentation jitter.
             dev_mult = float(getattr(config, "TRACK_STABILITY_DET_DEV_MULT", 1.6) or 1.6)
             dev_mult = max(1.0, min(4.0, dev_mult))
             max_det_dev = int(max_det_dev * dev_mult)
             max_det_dev = max(0, min(200, max_det_dev))
 
-        # When two cars touch/overlap, raw bboxes jitter heavily. We still must avoid
-        # letting the bbox drift far away from the actual car, so CAP the anchor range.
         if overlap_boost and (not was_lost) and max_det_dev > 0:
             max_overlap_dev = int(getattr(config, "TRACK_OVERLAP_MAX_DET_DEV_PX", 28) or 28)
             max_overlap_dev = max(0, min(200, max_overlap_dev))
             if max_overlap_dev > 0:
                 max_det_dev = min(max_det_dev, max_overlap_dev)
-
-        # Apply the same hard-anchor concept to the center to prevent the bbox from
-        # detaching from the physical object (important when overlap_boost recenters).
         if max_det_dev > 0:
             try:
                 cx, cy = map(int, self.center)
@@ -379,9 +366,6 @@ class Vehicle:
                 new_bbox = (int(nx), int(ny), int(max(1, nw)), int(max(1, nh)))
         except Exception:
             pass
-
-        # Overlap mode: keep bbox size stable and keep it centered on the smoothed center.
-        # This removes top-left jitter that comes from segmentation wobbling at contact points.
         if overlap_boost and (not was_lost):
             lock_size = bool(getattr(config, "TRACK_OVERLAP_LOCK_SIZE", True))
             center_box = bool(getattr(config, "TRACK_OVERLAP_CENTER_BOX", True))
@@ -465,9 +449,6 @@ class Vehicle:
                 nh = oh
             new_bbox = (nx, ny, nw, nh)
 
-        # Stabilize bbox/center using a rolling median filter.
-        # Rolling median is optional; default disabled to avoid match lag.
-        # For smoother visual tracking, default to a small window.
         bbox_win = int(getattr(config, "TRACK_BBOX_MEDIAN_WINDOW", 3) or 0)
         center_win = int(getattr(config, "TRACK_CENTER_MEDIAN_WINDOW", 3) or 0)
         bbox_win = max(0, min(9, bbox_win))
@@ -476,8 +457,6 @@ class Vehicle:
             bbox_win = max(bbox_win, int(getattr(config, "TRACK_STARTUP_BBOX_MEDIAN_WINDOW", 5) or 5))
             center_win = max(center_win, int(getattr(config, "TRACK_STARTUP_CENTER_MEDIAN_WINDOW", 5) or 5))
         if stability_boost:
-            # Median window is very effective for close/overlapping cars where
-            # detections jitter between frames. Keep it small to avoid visible lag.
             bbox_win = max(bbox_win, int(getattr(config, "TRACK_STABILITY_BBOX_MEDIAN_WINDOW", 3) or 3))
             center_win = max(center_win, int(getattr(config, "TRACK_STABILITY_CENTER_MEDIAN_WINDOW", 3) or 3))
         if overlap_boost:
@@ -509,7 +488,6 @@ class Vehicle:
         self.vehicle_type = self._classify_vehicle(area)
         
         # Store stabilized center for downstream speed/velocity prediction.
-        # Using raw detection centers here amplifies jitter, especially when cars are close.
         self.positions.append(tuple(int(v) for v in self.center))
         self.timestamps.append(now_ts)
         
@@ -575,9 +553,6 @@ class Vehicle:
 
         if dx == 0 and dy == 0:
             return
-
-        # Prevent cumulative drift: keep prediction within a bounded radius of the
-        # last observed measurement so boxes don't "fly away" during long occlusions.
         try:
             last_obs = getattr(self, "_last_observed_center", None)
             if last_obs is None:
@@ -953,10 +928,6 @@ class VehicleDetector:
                 if dmax > 0:
                     base_ratio = float(getattr(config, "BLOB_SPLIT_DT_THRESH_RATIO", 0.5) or 0.5)
                     base_ratio = max(0.2, min(0.9, base_ratio))
-
-                    # Sweep a few ratios around the default; higher ratios tend to
-                    # produce smaller peaks (better separation), while lower ratios
-                    # can keep smaller cars from disappearing.
                     ratio_candidates = [
                         base_ratio,
                         base_ratio + 0.08,
@@ -1091,16 +1062,10 @@ class VehicleDetector:
         # De-duplicate co-located tracks (prevents 1 physical car -> IDs 1 & 2 flicker)
         self._suppress_duplicate_tracks()
 
-        # IMPORTANT: "confirmed updates" should mean a confirmed track was matched to
-        # an explicit detection in this frame (not merely rescued by presence checks).
         self.had_confirmed_updates_this_frame = any(
             bool(getattr(v, "confirmed", False)) and int(getattr(v, "lost_frames", 0)) == 0
             for v in self.vehicles.values()
         )
-
-        # IMPORTANT for stability: when a vehicle is not detected in the current frame,
-        # do NOT move its bbox/center via prediction. This prevents boxes from drifting,
-        # flying away, or shifting unpredictably before being cleared.
         now_ts = time.time()
 
         # Keep these windows for removal/TTL behavior (even though we do not move boxes).
@@ -1108,9 +1073,6 @@ class VehicleDetector:
         collision_predict_for_lost = int(getattr(config, "COLLISION_TRACK_PREDICT_FOR_LOST_FRAMES", 60) or 60)
         collision_predict_for_lost = max(predict_for_lost, min(600, collision_predict_for_lost))
 
-        # Internal-only prediction update:
-        # Helps reacquire the same ID after brief misses (touching cars / merged masks)
-        # without ever showing/making decisions based on predicted boxes.
         for v in self.vehicles.values():
             if not getattr(v, "confirmed", False):
                 continue
@@ -1128,16 +1090,11 @@ class VehicleDetector:
                 continue
             v.apply_prediction_update(now_ts)
 
-        # Presence-based ghost suppression (color segmentation only):
-        # When a track is lost and the bbox has near-zero supporting car-color pixels
-        # for several frames, prune it early to prevent ghost/lingering boxes.
         force_remove = set()
         presence_ratio_by_id = {}
         if self.use_color_segmentation and self._last_color_mask is not None:
             presence_min = float(getattr(config, "TRACK_PRESENCE_MIN_RATIO", 0.0) or 0.0)
 
-            # Extremely low ratio indicates the bbox is no longer over a real object.
-            # Use a small threshold derived from presence_min to avoid false removals.
             kill_ratio = max(0.001, min(0.02, presence_min * 0.10))
 
             # Convert a small time budget (~200ms) into frames using configured FPS.
@@ -1182,18 +1139,12 @@ class VehicleDetector:
                     presence_ratio_by_id[int(getattr(v, "id", 0) or 0)] = float(ratio)
                 except Exception:
                     pass
-
-                # If mask indicates presence, reset ghost counter but do NOT
-                # resurrect the track as "detected this frame".
                 if presence_min > 0 and ratio >= presence_min:
                     try:
                         v._no_presence_frames = 0
                     except Exception:
                         pass
                     continue
-
-                # Otherwise accumulate absence evidence. Predicted-only tracks are
-                # pruned faster; non-predicted lost tracks are pruned more slowly.
                 if ratio <= kill_ratio:
                     try:
                         n = int(getattr(v, "_no_presence_frames", 0) or 0) + 1
@@ -1232,8 +1183,6 @@ class VehicleDetector:
         collision_grace_seconds = max(0.0, min(30.0, collision_grace_seconds))
         roi_outside_remove_seconds = float(getattr(config, "ROI_OUTSIDE_REMOVE_SECONDS", 0.0) or 0.0)
 
-        # While a confirmed vehicle is still within the prediction window,
-        # avoid removing it purely due to time-based stale timestamps.
         predict_for_lost = int(getattr(config, "TRACK_PREDICT_FOR_LOST_FRAMES", 12) or 12)
 
         intersection_roi_mask = self._get_intersection_roi_mask(frame)
@@ -1316,12 +1265,6 @@ class VehicleDetector:
 
         for vehicle_id in to_remove:
             self.vehicles.pop(vehicle_id, None)
-
-        # Visibility policy:
-        # - Always show tracks detected (matched) in THIS frame.
-        # - During collision stability only, allow a very short "hold" window when the
-        #   color mask still indicates the vehicle is present, but FREEZE the bbox/center
-        #   at the last observed position (no drift).
         visible: List[Vehicle] = []
 
         # Keep the hold window tiny to satisfy "instant clear" when a vehicle truly disappears.
@@ -1431,8 +1374,6 @@ class VehicleDetector:
                 if circ < min_circ:
                     return False
 
-        # Be stricter on small blobs (they're most often false positives).
-        # This keeps real cars (larger blobs) unaffected while suppressing noise.
         strict_area = float(
             getattr(
                 config,
@@ -1502,9 +1443,6 @@ class VehicleDetector:
         if combined_mask is None:
             return []
 
-        # Clean up mask.
-        # IMPORTANT: Avoid fusing two nearby cars into one blob: keep color-mask closing
-        # very small (or disabled) via COLOR_MASK_CLOSE_KERNEL.
         color_open_k = tuple(getattr(config, "COLOR_MASK_OPEN_KERNEL", (3, 3)))
         kernel_open = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, color_open_k)
         combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_OPEN, kernel_open)
@@ -1591,8 +1529,6 @@ class VehicleDetector:
                 self.background_ready = True
             return []
 
-        # Use a small learning rate instead of fully freezing.
-        # A fully frozen model can fail if cars were present during warmup.
         learning_rate = float(getattr(config, "BG_LEARNING_RATE", 0.001))
         fg_mask = self.bg_subtractor.apply(frame, learningRate=learning_rate)
         _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
@@ -1707,8 +1643,7 @@ class VehicleDetector:
         strong_iou = float(getattr(config, "TRACK_MATCH_STRONG_IOU", 0.25) or 0.25)
         strong_iou = max(0.05, min(0.95, strong_iou))
 
-        # Precompute "crowded" flags for detections: close/overlapping cars tend to
-        # produce jittery bboxes, so we stabilize more aggressively for those updates.
+        # Precompute "crowded" flags for detections.
         crowd_dist_px = float(getattr(config, "TRACK_CROWD_DISTANCE_PX", 75.0) or 75.0)
         crowd_iou = float(getattr(config, "TRACK_CROWD_IOU", 0.05) or 0.05)
         overlap_iou = float(getattr(config, "TRACK_OVERLAP_IOU", 0.08) or 0.08)
@@ -1746,8 +1681,6 @@ class VehicleDetector:
         # Global assignment: prefer higher overlap, then smaller distance.
         pairs = []  # (iou, distance, vehicle_id, det_idx)
 
-        # When cars are crowded/overlapping, center-distance becomes ambiguous. Require
-        # some overlap with the existing track to avoid ID swaps that cause "fly away".
         min_iou_crowd_match = float(getattr(config, "TRACK_MATCH_MIN_IOU_WHEN_CROWDED", 0.02) or 0.02)
         min_iou_overlap_match = float(getattr(config, "TRACK_MATCH_MIN_IOU_WHEN_OVERLAP", 0.06) or 0.06)
         min_iou_crowd_match = max(0.0, min(0.5, min_iou_crowd_match))
@@ -1757,8 +1690,6 @@ class VehicleDetector:
 
         for vehicle_id, vehicle in self.vehicles.items():
             for det_idx, det in enumerate(detections):
-                # NOTE: lost_frames is incremented before matching, so 1 means
-                # "not yet matched in this frame". Treat >1 as genuinely lost.
                 lost = int(getattr(vehicle, "lost_frames", 0) or 0) > 1
 
                 ref_center = vehicle.center
@@ -1849,8 +1780,6 @@ class VehicleDetector:
                 continue
             source = det.get("source")
 
-            # When color segmentation is enabled, motion detections are only used to
-            # re-acquire existing tracks and must not create new ones (prevents ghosts).
             if self.use_color_segmentation and source == "motion":
                 continue
 

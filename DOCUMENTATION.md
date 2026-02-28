@@ -1,7 +1,7 @@
 # USAD – Full Project Documentation
 
 **For research and client reference.**  
-This document explains the project and every file in plain sentences.
+This document explains the project and every file.
 
 ---
 
