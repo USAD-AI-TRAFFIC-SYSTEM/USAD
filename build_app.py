@@ -40,7 +40,7 @@ pyinstaller_args = [
     
     # Add data files (assets, fonts, etc.)  — use ; on Windows
     f"--add-data={usad_model / 'assets'};assets",
-    f"--add-data={usad_model / 'logs'};logs",
+    # Note: logs/ is NOT bundled — created at runtime next to the EXE
     
     # Hidden imports — local modules
     "--hidden-import=main",
@@ -66,6 +66,7 @@ pyinstaller_args = [
     "--hidden-import=serial",
     "--hidden-import=serial.tools",
     "--hidden-import=serial.tools.list_ports",
+    "--hidden-import=serial.tools.list_ports_windows",
     
     # Collect all package data (themes, assets, models)
     "--collect-all=customtkinter",
