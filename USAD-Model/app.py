@@ -1,5 +1,14 @@
 import os
+import sys
 import time
+
+# ── Fast-path: launch dashboard without loading heavy modules ─────────────────
+if "--dashboard" in sys.argv:
+    from dashboard import DashboardApp
+    dash = DashboardApp()
+    dash.mainloop()
+    sys.exit(0)
+
 import cv2
 import numpy as np
 import customtkinter as ctk
@@ -40,10 +49,26 @@ LANE_NAMES = {
     "LANE4": "West",
 }
 
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# In frozen EXE: assets are in sys._MEIPASS, logs/runtime data next to the EXE
+if getattr(sys, 'frozen', False):
+    _ASSET_DIR   = sys._MEIPASS
+    _RUNTIME_DIR = os.path.dirname(sys.executable)
+else:
+    _ASSET_DIR   = os.path.dirname(os.path.abspath(__file__))
+    _RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = _ASSET_DIR  # backward compat
 
 def find_file(name):
-    for d in [BASE_DIR, os.path.join(BASE_DIR, "logs"), os.path.join(BASE_DIR, "assets")]:
+    # Search bundled assets first, then runtime dir (for logs etc.)
+    search = [
+        _ASSET_DIR,
+        os.path.join(_ASSET_DIR, "assets"),
+        _RUNTIME_DIR,
+        os.path.join(_RUNTIME_DIR, "logs"),
+        os.path.join(_RUNTIME_DIR, "assets"),
+    ]
+    for d in search:
         p = os.path.join(d, name)
         if os.path.exists(p):
             return p
@@ -178,8 +203,7 @@ class USADApp(ctk.CTk):
     def _load_logo(self):
         """Load and display the logo image."""
         import os
-        logo_path = os.path.join(os.path.dirname(os.path.abspath(__file__)),
-                                 "assets", "Logo 1.png")
+        logo_path = os.path.join(_ASSET_DIR, "assets", "Logo 1.png")
         try:
             img = Image.open(logo_path).convert("RGBA")
             # Fit inside the square while preserving aspect ratio
@@ -428,37 +452,21 @@ class USADApp(ctk.CTk):
 
     def _tab_dashboard(self):
         """Launch dashboard.py as a separate window."""
-        import subprocess, sys, os, threading
+        import subprocess, sys, os
         self._btn_dashboard.configure(fg_color=C_PRIMARY, text_color="#ffffff",
                                        font=("Helvetica", 11, "bold"))
         self._btn_camera.configure(fg_color=C_DIVIDER, text_color=C_SECONDARY,
                                     font=("Helvetica", 11))
         # Reset button appearance back after 300ms
         self.after(300, self._tab_camera)
-        script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
         
         # Check if running as PyInstaller frozen executable
-        is_frozen = getattr(sys, 'frozen', False)
-        if is_frozen:
-            # When frozen, import and run dashboard in a separate thread instead of subprocess
-            try:
-                import importlib.util
-                spec = importlib.util.spec_from_file_location("dashboard", script)
-                dashboard_module = importlib.util.module_from_spec(spec)
-                
-                def run_dashboard():
-                    try:
-                        spec.loader.exec_module(dashboard_module)
-                    except Exception as e:
-                        print(f"[Dashboard] Failed to launch: {e}")
-                
-                # Run dashboard in background thread so it doesn't block main app
-                dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
-                dashboard_thread.start()
-            except Exception as e:
-                print(f"[Dashboard] Import failed: {e}")
+        if getattr(sys, 'frozen', False):
+            # When frozen, re-launch the EXE with --dashboard flag
+            subprocess.Popen([sys.executable, "--dashboard"])
         else:
-            # Normal Python environment - use subprocess
+            # Normal Python environment - launch dashboard.py directly
+            script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
             subprocess.Popen([sys.executable, script])
 
     # ── Toast notification ───────────────────────────────────────────────

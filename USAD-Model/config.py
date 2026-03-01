@@ -1,9 +1,25 @@
 """USAD configuration."""
 
 import os as _os
+import sys as _sys
 
-# Resolve the USAD root (one level above this file: USAD-Model/../ = USAD/)
-_USAD_ROOT = _os.path.dirname(_os.path.dirname(_os.path.abspath(__file__)))
+
+# ── Frozen-aware path helpers ─────────────────────────────────────────────────
+def _get_asset_dir():
+    """Directory for bundled read-only assets (inside EXE or source tree)."""
+    if getattr(_sys, 'frozen', False):
+        return _sys._MEIPASS
+    return _os.path.dirname(_os.path.abspath(__file__))
+
+def _get_runtime_dir():
+    """Directory for runtime data (logs, etc.) — persists next to the EXE."""
+    if getattr(_sys, 'frozen', False):
+        return _os.path.dirname(_sys.executable)
+    return _os.path.dirname(_os.path.abspath(__file__))
+
+
+# Resolve the USAD root
+_USAD_ROOT = _get_runtime_dir()
 
 
 # ── Arduino auto-detection ───────────────────────────────────────────────────
@@ -400,8 +416,8 @@ ENABLE_CALL_SIMULATION = True
 NOTIFICATION_COOLDOWN = 60
 
 # Logging
-# Logs go to USAD-Model/logs/ (same folder as this config).
-LOG_DIRECTORY = _os.path.join(_os.path.dirname(_os.path.abspath(__file__)), "logs")
+# Logs go next to the EXE (when frozen) or next to config.py (when running from source).
+LOG_DIRECTORY = _os.path.join(_get_runtime_dir(), "logs")
 EVENT_LOG_FILE = "traffic_events.csv"
 VIOLATION_LOG_FILE = "violations.csv"
 ACCIDENT_LOG_FILE = "accidents.csv"

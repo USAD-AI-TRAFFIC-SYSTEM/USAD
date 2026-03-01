@@ -8,11 +8,26 @@ from PIL import Image
 import customtkinter as ctk
 from collections import Counter
 
-# Paths
-BASE_DIR = os.path.dirname(os.path.abspath(__file__))
+# Paths — frozen-aware: assets from bundle, logs from next to EXE
+import sys as _sys
+if getattr(_sys, 'frozen', False):
+    _ASSET_DIR   = _sys._MEIPASS
+    _RUNTIME_DIR = os.path.dirname(_sys.executable)
+else:
+    _ASSET_DIR   = os.path.dirname(os.path.abspath(__file__))
+    _RUNTIME_DIR = os.path.dirname(os.path.abspath(__file__))
+
+BASE_DIR = _ASSET_DIR
 
 def find_file(name):
-    for d in [BASE_DIR, os.path.join(BASE_DIR, "logs"), os.path.join(BASE_DIR, "assets")]:
+    search = [
+        _ASSET_DIR,
+        os.path.join(_ASSET_DIR, "assets"),
+        _RUNTIME_DIR,
+        os.path.join(_RUNTIME_DIR, "logs"),
+        os.path.join(_RUNTIME_DIR, "assets"),
+    ]
+    for d in search:
         p = os.path.join(d, name)
         if os.path.exists(p):
             return p
