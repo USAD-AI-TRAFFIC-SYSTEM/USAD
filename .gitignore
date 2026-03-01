@@ -8,6 +8,11 @@ __pycache__/
 venv/
 .venv/
 
+# PyInstaller build output
+dist/
+build/
+*.spec
+
 # Test/cache
 .pytest_cache/
 .mypy_cache/

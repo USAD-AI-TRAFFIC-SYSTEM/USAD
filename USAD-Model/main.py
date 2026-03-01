@@ -112,10 +112,14 @@ class USAD:
         self._last_vehicle_seen_ts: float = time.time()
         self._no_car_idle_mode: bool = False
         
-        # Config hot reload
+        # Config hot reload (disabled when running as bundled exe)
         script_dir = os.path.dirname(os.path.abspath(__file__))
         self.config_path = os.path.join(script_dir, 'config.py')
-        self.config_last_modified = os.path.getmtime(self.config_path)
+        self._is_frozen = getattr(sys, 'frozen', False)  # True when running as PyInstaller exe
+        if not self._is_frozen and os.path.exists(self.config_path):
+            self.config_last_modified = os.path.getmtime(self.config_path)
+        else:
+            self.config_last_modified = 0
         self.config_check_interval = 1.0  # Check every 1 second
         self.last_config_check = time.time()
 
@@ -715,12 +719,17 @@ class USAD:
             print("\n[Display] Fullscreen mode: OFF")
     
     def check_config_reload(self):
-        """Check if config file has been modified and reload if needed"""
+        """Check if config file has been modified and reload if needed.
+        Skipped when running as a bundled exe (no source files available)."""
+        if self._is_frozen:
+            return
         current_time = time.time()
         if current_time - self.last_config_check < self.config_check_interval:
             return
         self.last_config_check = current_time
         try:
+            if not os.path.exists(self.config_path):
+                return
             current_mtime = os.path.getmtime(self.config_path)
             if current_mtime != self.config_last_modified:
                 print("\n[Config] Detected changes in config.py, reloading...")
