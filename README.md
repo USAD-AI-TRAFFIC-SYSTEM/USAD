@@ -264,11 +264,6 @@ The **Eyeing Your Encounter (E.Y.E.)** subsystem is implemented in `USAD-Model/v
 - When the signal for a lane is **RED**, the system checks whether a vehicle’s tracked path crosses the stop line.
 - A minimum speed threshold (`RED_LIGHT_SPEED_THRESHOLD`) prevents slow, creeping movements from being misclassified.
 
-### Yellow‑light abuse
-
-- When a lane is **YELLOW**, USAD estimates whether the vehicle could have safely stopped before the stop line.
-- Vehicles that are still far from the line (`YELLOW_SAFE_DISTANCE`) but proceed at high speed (`YELLOW_ABUSE_SPEED_THRESHOLD`) are flagged as yellow‑light abuse.
-
 ## 🚨 Emergency Notification System
 
 The emergency‑notification pipeline, implemented in `USAD-Model/emergency_notifier.py`, is triggered only for **confirmed** accidents.
