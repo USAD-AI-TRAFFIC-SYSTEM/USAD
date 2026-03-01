@@ -428,7 +428,7 @@ class USADApp(ctk.CTk):
 
     def _tab_dashboard(self):
         """Launch dashboard.py as a separate window."""
-        import subprocess, sys, os
+        import subprocess, sys, os, threading
         self._btn_dashboard.configure(fg_color=C_PRIMARY, text_color="#ffffff",
                                        font=("Helvetica", 11, "bold"))
         self._btn_camera.configure(fg_color=C_DIVIDER, text_color=C_SECONDARY,
@@ -436,7 +436,30 @@ class USADApp(ctk.CTk):
         # Reset button appearance back after 300ms
         self.after(300, self._tab_camera)
         script = os.path.join(os.path.dirname(os.path.abspath(__file__)), "dashboard.py")
-        subprocess.Popen([sys.executable, script])
+        
+        # Check if running as PyInstaller frozen executable
+        is_frozen = getattr(sys, 'frozen', False)
+        if is_frozen:
+            # When frozen, import and run dashboard in a separate thread instead of subprocess
+            try:
+                import importlib.util
+                spec = importlib.util.spec_from_file_location("dashboard", script)
+                dashboard_module = importlib.util.module_from_spec(spec)
+                
+                def run_dashboard():
+                    try:
+                        spec.loader.exec_module(dashboard_module)
+                    except Exception as e:
+                        print(f"[Dashboard] Failed to launch: {e}")
+                
+                # Run dashboard in background thread so it doesn't block main app
+                dashboard_thread = threading.Thread(target=run_dashboard, daemon=True)
+                dashboard_thread.start()
+            except Exception as e:
+                print(f"[Dashboard] Import failed: {e}")
+        else:
+            # Normal Python environment - use subprocess
+            subprocess.Popen([sys.executable, script])
 
     # ── Toast notification ───────────────────────────────────────────────
     def _show_toast(self, message: str, duration_ms: int = 2800):
