@@ -4,6 +4,8 @@ USAD is an AI‑assisted traffic management system that uses classical computer 
 
 It ingests a live video feed, detects and tracks vehicles, identifies dangerous situations (accidents and violations), and coordinates both simulated and physical traffic lights via Arduino.
 
+<img width="1909" height="1080" alt="638378206_1523991645367022_5662007556454183657_n" src="https://github.com/user-attachments/assets/55f6f23d-02a7-4954-a1bf-33b105b7850d" />
+
 ## 🚦 Key Features
 
 ### Core Capabilities
