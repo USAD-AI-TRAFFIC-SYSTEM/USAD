@@ -2,6 +2,9 @@
 
 An AI-powered traffic management system that uses computer vision to enhance road safety and optimize intersection flow through intelligent, data-driven control.
 
+
+<img width="1909" height="1080" alt="638378206_1523991645367022_5662007556454183657_n" src="https://github.com/user-attachments/assets/e8dbea4a-ae4f-420a-9abc-cd48f0949bcb" />
+
 ## 🚦 Features
 
 ### Core Capabilities
