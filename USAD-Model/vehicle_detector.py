@@ -832,6 +832,11 @@ class VehicleDetector:
             print("[VehicleDetector] Background learning reset (rebuilding model)")
 
     def _get_intersection_roi_mask(self, frame: np.ndarray) -> Optional[np.ndarray]:
+        # Only enforce intersection ROI gating on Camera 1 (safety view).
+        # Camera 2 (license plate scanner side view) should detect vehicles anywhere in the frame.
+        if config is not None and getattr(config, "CAMERA_SOURCE", None) != 1:
+            return None
+
         if not bool(getattr(config, "REQUIRE_INTERSECTION_ROI_FOR_DETECTION", False)):
             return None
 
@@ -1497,8 +1502,9 @@ class VehicleDetector:
                 if intersection_roi_mask is not None and (not self._any_point_in_mask(intersection_roi_mask, pts)):
                     continue
 
-                # Optionally require lane membership at detection-time
-                if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True):
+                # Optionally require lane membership at detection-time (only on Camera 1)
+                is_cam_1 = (config.CAMERA_SOURCE == 1)
+                if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True) and is_cam_1:
                     tol = float(getattr(config, "LANE_MEMBERSHIP_TOLERANCE_PX", 0.0) or 0.0)
                     is_in_lane = False
                     for lane_data in config.LANES.values():
@@ -1582,7 +1588,8 @@ class VehicleDetector:
                 if roi_mask is not None and (not self._any_point_in_mask(roi_mask, pts)):
                     continue
 
-                if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True):
+                is_cam_1 = (config.CAMERA_SOURCE == 1)
+                if getattr(config, "REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION", True) and is_cam_1:
                     tol = float(getattr(config, "LANE_MEMBERSHIP_TOLERANCE_PX", 0.0) or 0.0)
                     is_in_lane = False
                     for lane_data in config.LANES.values():
