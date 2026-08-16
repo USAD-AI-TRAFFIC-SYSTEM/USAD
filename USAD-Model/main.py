@@ -267,14 +267,22 @@ class USAD:
                     debug_info = dict(getattr(self.license_plate_detector, "last_debug_info", {}) or {})
                     if result:
                         plate_text, confidence, plate_bbox = result
-                        vehicle.license_plate = plate_text
-                        vehicle.license_plate_confidence = confidence
-                        successes += 1
-                        if debug_this_frame:
-                            print(
-                                f"[LP DEBUG] vehicle_id={vehicle.id} status=SUCCESS text={plate_text} conf={confidence:.1f}% "
-                                f"candidates={debug_info.get('candidate_count', 0)}"
-                            )
+                        # Validate format: 3 alpha + 3 numeric
+                        cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
+                        if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                            vehicle.license_plate = cleaned
+                            vehicle.license_plate_confidence = confidence
+                            successes += 1
+                            if debug_this_frame:
+                                print(
+                                    f"[LP DEBUG] vehicle_id={vehicle.id} status=SUCCESS text={cleaned} conf={confidence:.1f}% "
+                                    f"candidates={debug_info.get('candidate_count', 0)}"
+                                )
+                        else:
+                            if debug_this_frame:
+                                print(
+                                    f"[LP DEBUG] vehicle_id={vehicle.id} status=INVALID_FORMAT text={cleaned} raw={plate_text}"
+                                )
                     elif debug_this_frame:
                         print(
                             f"[LP DEBUG] vehicle_id={vehicle.id} status=NO_READ reason={debug_info.get('status', 'unknown')} "
@@ -828,6 +836,15 @@ class USAD:
             else:
                 print(f"[CRITICAL] Could not re-open original source {orig_source} either!")
                 self.cap = None
+
+        # Reset detectors on camera switch to prevent old frames' vehicle positions/states
+        # from leaking into the new camera source feed.
+        try:
+            self.vehicle_detector.reset()
+            self.accident_detector.reset()
+            self.violation_detector.reset()
+        except Exception:
+            pass
 
     def run(self):
         """Main application loop"""

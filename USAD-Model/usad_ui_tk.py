@@ -492,6 +492,13 @@ class RealtimeDetectorEngine:
                     for _ in range(5):
                         cap.read()
                     print(f"[UI Engine] ✓ Switched to source {new_src}")
+                    # Reset detectors on camera switch to prevent old frame data from leaking
+                    try:
+                        self._vehicle_detector.reset()
+                        self._accident_detector.reset()
+                        self._violation_detector.reset()
+                    except Exception:
+                        pass
                 else:
                     print(f"[UI Engine] ERROR: Could not open camera {new_src}")
                     with self._lock:
@@ -561,8 +568,11 @@ class RealtimeDetectorEngine:
                                 res = self._license_plate_detector.detect_license_plate(frame_bgr, v.bbox)
                                 if res:
                                     plate_text, confidence, _plate_bbox = res
-                                    v.license_plate = plate_text
-                                    v.license_plate_confidence = confidence
+                                    # Validate format: 3 alpha + 3 numeric
+                                    cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
+                                    if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                                        v.license_plate = cleaned
+                                        v.license_plate_confidence = confidence
                 except Exception:
                     pass
 
