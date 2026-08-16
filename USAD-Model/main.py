@@ -444,6 +444,7 @@ class USAD:
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
         is_camera_1 = (config.CAMERA_SOURCE == 1)
+        is_camera_2 = (config.CAMERA_SOURCE == 2)
 
         if config.SHOW_LANE_REGIONS and is_camera_1:
             for lane_key, lane_data in config.LANES.items():
