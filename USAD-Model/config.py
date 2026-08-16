@@ -50,10 +50,11 @@ ARDUINO_BAUDRATE = 9600
 ARDUINO_TIMEOUT = 1
 
 # Camera
-CAMERA_SOURCE = 0
+CAMERA_SOURCE = 1
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
+CAMERA_SOURCES = [1, 2]  # Available USB camera sources to cycle between (skips laptop webcam at 0)
 
 # Lanes (polygons in 1280x720 coordinates)
 LANES = {
