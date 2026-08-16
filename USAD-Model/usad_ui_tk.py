@@ -153,6 +153,22 @@ class RealtimeDetectorEngine:
         self._current_phase: str = "GREEN"
         self._phase_start_time: float = time.time()
         self._lane_green_duration: float = float(getattr(config, "GREEN_TIME", 30)) if config is not None else 30.0
+        self._new_camera_source = None
+
+    def cycle_camera(self) -> None:
+        if config is None or not getattr(config, "CAMERA_SOURCES", None):
+            return
+        with self._lock:
+            orig_source = self._camera_source
+            try:
+                current_idx = config.CAMERA_SOURCES.index(orig_source)
+                next_idx = (current_idx + 1) % len(config.CAMERA_SOURCES)
+                next_source = config.CAMERA_SOURCES[next_idx]
+            except ValueError:
+                next_source = config.CAMERA_SOURCES[0]
+            
+            if next_source != orig_source:
+                self._new_camera_source = next_source
 
     def start(self) -> None:
         if self._thread is not None:
@@ -186,6 +202,46 @@ class RealtimeDetectorEngine:
     def get_last_events(self):
         with self._lock:
             return self._last_confirmed_accident, self._last_violation
+
+    def reset(self) -> None:
+        with self._lock:
+            if self._vehicle_detector is not None:
+                try:
+                    self._vehicle_detector.reset()
+                except Exception:
+                    pass
+            if self._accident_detector is not None:
+                try:
+                    self._accident_detector.reset()
+                except Exception:
+                    pass
+            if self._violation_detector is not None:
+                try:
+                    self._violation_detector.reset()
+                except Exception:
+                    pass
+            if self._emergency_notifier is not None:
+                try:
+                    self._emergency_notifier.reset()
+                except Exception:
+                    pass
+            self._vehicle_count = 0
+            self._violation_count = 0
+            self._emergency_calls = 0
+            self._last_confirmed_accident = None
+            self._last_violation = None
+
+    def set_auto_mode(self) -> None:
+        with self._lock:
+            self._software_auto_mode = True
+
+    def activate_lane_by_name(self, lane_name: str) -> None:
+        with self._lock:
+            self._software_auto_mode = False
+            self._current_active_lane = lane_name
+            self._current_phase = "GREEN"
+            self._phase_start_time = time.time()
+            self._apply_signal_states(lane_name, "GREEN")
 
     def _lane_order(self) -> List[str]:
         if config is None or not hasattr(config, "LANES"):
@@ -393,6 +449,51 @@ class RealtimeDetectorEngine:
 
         # Main loop.
         while not self._stop.is_set():
+            # Check for camera switch request
+            with self._lock:
+                new_src = self._new_camera_source
+                self._new_camera_source = None
+            
+            if new_src is not None:
+                print(f"[UI Engine] Switching camera from {self._camera_source} to {new_src}...")
+                if cap is not None:
+                    try:
+                        cap.release()
+                    except Exception:
+                        pass
+                
+                self._camera_source = new_src
+                config.CAMERA_SOURCE = new_src
+                
+                # Try opening the new source
+                cap = None
+                for name, backend in backends:
+                    try:
+                        c = cv2.VideoCapture(new_src, backend)
+                        if c is not None and c.isOpened():
+                            cap = c
+                            with self._lock:
+                                self._status = f"Camera open ({name})"
+                            break
+                    except Exception:
+                        continue
+                
+                if cap is not None and cap.isOpened():
+                    try:
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, float(getattr(config, "CAMERA_WIDTH", self._base_w)))
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, float(getattr(config, "CAMERA_HEIGHT", self._base_h)))
+                        cap.set(cv2.CAP_PROP_FPS, float(getattr(config, "CAMERA_FPS", 30)))
+                    except Exception:
+                        pass
+                    # Warm up
+                    for _ in range(5):
+                        cap.read()
+                    print(f"[UI Engine] ✓ Switched to source {new_src}")
+                else:
+                    print(f"[UI Engine] ERROR: Could not open camera {new_src}")
+                    with self._lock:
+                        self._status = f"ERROR: Can't open source {new_src}"
+
             ok, frame_bgr = cap.read()
             if not ok or frame_bgr is None:
                 time.sleep(0.02)
@@ -896,6 +997,25 @@ class CameraFeed:
                 pass
             self._cap = None
 
+    def cycle_camera(self) -> None:
+        if config is None or not getattr(config, "CAMERA_SOURCES", None):
+            return
+        
+        orig_source = self._source
+        try:
+            current_idx = config.CAMERA_SOURCES.index(orig_source)
+            next_idx = (current_idx + 1) % len(config.CAMERA_SOURCES)
+            next_source = config.CAMERA_SOURCES[next_idx]
+        except ValueError:
+            next_source = config.CAMERA_SOURCES[0]
+
+        if next_source != orig_source:
+            print(f"[CameraFeed] Switching from source {orig_source} to {next_source}...")
+            self.stop()
+            self._source = next_source
+            config.CAMERA_SOURCE = next_source
+            self.start()
+
     def tick(self) -> None:
         # If an external engine is attached, just forward its latest preview.
         if self._external_engine is not None:
@@ -1364,6 +1484,11 @@ class USADTkApp(ttk.Frame):
         self._feed.start()
 
         try:
+            self.master.bind("<Key>", self._on_key_press)
+        except Exception:
+            pass
+
+        try:
             self.master.protocol("WM_DELETE_WINDOW", self._on_close)
         except Exception:
             pass
@@ -1388,6 +1513,39 @@ class USADTkApp(ttk.Frame):
         except Exception:
             pass
 
+    def _on_key_press(self, event: tk.Event) -> None:
+        char = event.char
+        if not char:
+            if event.keysym == "Escape":
+                self._on_close()
+            return
+
+        char_lower = char.lower()
+        if char_lower == 'q':
+            self._on_close()
+        elif char_lower == 'c':
+            self._switch_camera()
+        elif char_lower == 'r':
+            print("[UI] Key R: Resetting system...")
+            if self._engine is not None:
+                self._engine.reset()
+            self._refresh_logs()
+        elif char_lower == 'a':
+            print("[UI] Key A: Auto cycling mode...")
+            if self._engine is not None:
+                self._engine.set_auto_mode()
+        elif char in ('1', '2', '3', '4'):
+            lane_key = f"LANE{char}"
+            print(f"[UI] Key {char}: Activating lane {lane_key}...")
+            if self._engine is not None:
+                self._engine.activate_lane_by_name(lane_key)
+        elif char_lower == 's':
+            print("[UI] Key S: Print statistics and generate report...")
+            if self._engine is not None:
+                if hasattr(self._engine, "_event_logger") and self._engine._event_logger is not None:
+                    self._engine._event_logger.generate_report()
+            self._refresh_logs()
+
     def _build_header(self) -> None:
         header = ttk.Frame(self)
         header.pack(fill="x", padx=10, pady=10)
@@ -1410,16 +1568,20 @@ class USADTkApp(ttk.Frame):
 
         self._arduino_status = tk.StringVar(value="—")
         self._fps_status = tk.StringVar(value="—")
+        self._camera_status = tk.StringVar(value="—")
 
         ttk.Label(right, text="Arduino:").grid(row=0, column=0, sticky="e")
         ttk.Label(right, textvariable=self._arduino_status).grid(row=0, column=1, sticky="w", padx=(4, 12))
-        ttk.Label(right, text="FPS:").grid(row=0, column=2, sticky="e")
-        ttk.Label(right, textvariable=self._fps_status).grid(row=0, column=3, sticky="w", padx=(4, 0))
+        ttk.Label(right, text="Camera:").grid(row=0, column=2, sticky="e")
+        ttk.Label(right, textvariable=self._camera_status).grid(row=0, column=3, sticky="w", padx=(4, 12))
+        ttk.Label(right, text="FPS:").grid(row=0, column=4, sticky="e")
+        ttk.Label(right, textvariable=self._fps_status).grid(row=0, column=5, sticky="w", padx=(4, 0))
 
         # Static status values from config
         if config is not None:
             fps = getattr(config, "CAMERA_FPS", "—")
             self._fps_status.set(str(fps))
+            self._camera_status.set(str(getattr(config, "CAMERA_SOURCE", "—")))
 
             if getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", False):
                 self._arduino_status.set("Simulated")
@@ -1457,9 +1619,9 @@ class USADTkApp(ttk.Frame):
         cam_panel.pack(fill="both", expand=True)
 
         tiles = ttk.Frame(cam_panel)
-        tiles.pack(fill="x", padx=8, pady=8)
+        tiles.pack(fill="both", expand=True, padx=8, pady=8)
         tiles.columnconfigure(0, weight=1)
-        tiles.columnconfigure(1, weight=1)
+        tiles.rowconfigure(0, weight=1)
 
         def get_overlays() -> List[CameraOverlay]:
             return list(self._camera_overlays)
@@ -1474,26 +1636,16 @@ class USADTkApp(ttk.Frame):
                 show_lane_guides=lambda: self._engine is None,
             )
 
-        tile1 = CameraTile(
+        self._tile = CameraTile(
             tiles,
-            "Camera 1 (click for full screen)",
+            "Active Camera Feed (click for full screen)",
             self._feed,
             on_fullscreen=open_fullscreen,
             get_overlays=get_overlays,
             base_size=(self._base_cam_w, self._base_cam_h),
             show_lane_guides=lambda: self._engine is None,
         )
-        tile2 = CameraTile(
-            tiles,
-            "Camera 2 (click for full screen)",
-            self._feed,
-            on_fullscreen=open_fullscreen,
-            get_overlays=get_overlays,
-            base_size=(self._base_cam_w, self._base_cam_h),
-            show_lane_guides=lambda: self._engine is None,
-        )
-        tile1.grid(row=0, column=0, sticky="nsew", padx=(0, 6))
-        tile2.grid(row=0, column=1, sticky="nsew", padx=(6, 0))
+        self._tile.grid(row=0, column=0, sticky="nsew")
 
         # Overlay metrics
         metrics = ttk.Frame(cam_panel)
@@ -1530,6 +1682,7 @@ class USADTkApp(ttk.Frame):
 
         key_lines = [
             "Q / ESC  Quit",
+            "C        Switch camera source",
             "R        Reset system",
             "A        Auto cycling mode",
             "1-4      Activate lanes",
@@ -1541,6 +1694,9 @@ class USADTkApp(ttk.Frame):
         # Right overlays
         self._accident_overlay = self._build_accident_overlay(right)
         self._violation_overlay = self._build_violation_overlay(right)
+
+        btn_switch_cam = ttk.Button(right, text="Switch Camera Source", command=self._switch_camera)
+        btn_switch_cam.pack(fill="x", pady=(10, 0))
 
         btn_refresh = ttk.Button(right, text="Refresh logs", command=self._refresh_logs)
         btn_refresh.pack(fill="x", pady=(10, 0))
@@ -1737,6 +1893,12 @@ class USADTkApp(ttk.Frame):
         self._route.trace_add("write", on_route)
         on_route()
 
+    def _switch_camera(self) -> None:
+        if self._engine is not None:
+            self._engine.cycle_camera()
+        else:
+            self._feed.cycle_camera()
+
     def _refresh_logs(self) -> None:
         logs_dir, snapshot = load_logs()
         self._logs_dir = logs_dir
@@ -1899,6 +2061,9 @@ class USADTkApp(ttk.Frame):
             )
 
     def _tick_camera(self) -> None:
+        if hasattr(self, "_camera_status"):
+            self._camera_status.set(str(config.CAMERA_SOURCE) if config is not None else "—")
+
         try:
             self._feed.tick()
         except Exception:

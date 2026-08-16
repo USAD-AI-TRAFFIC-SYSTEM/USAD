@@ -262,7 +262,11 @@ class ViolationDetector:
         p1 = np.array(line[0], dtype=np.float32)
         p2 = np.array(line[1], dtype=np.float32)
         
-        d = np.abs(np.cross(p2 - p1, p1 - p)) / np.linalg.norm(p2 - p1)
+        # 2D cross product: u x v = u_x * v_y - u_y * v_x
+        v1 = p2 - p1
+        v2 = p1 - p
+        cross_prod = v1[0] * v2[1] - v1[1] * v2[0]
+        d = np.abs(cross_prod) / np.linalg.norm(v1)
         
         return d
     

@@ -424,7 +424,7 @@ class USAD:
         cv2.putText(frame, f"Arduino: {arduino_status}", (x_left, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, status_color, 1)
         
-        cv2.putText(frame, f"FPS: {self.fps:.1f}", (x_left + 250, y_offset),
+        cv2.putText(frame, f"FPS: {self.fps:.1f} | Cam: {config.CAMERA_SOURCE}", (x_left + 250, y_offset),
                    cv2.FONT_HERSHEY_SIMPLEX, 0.5, (255, 255, 255), 1)
         
         y_offset += 25
@@ -523,7 +523,7 @@ class USAD:
         y_offset += 30
         
         # Controls
-        cv2.putText(frame, "Controls: [Q]uit | [R]eset | [A]uto | [1-4]Lanes | [S]tats | [F]ullscreen",
+        cv2.putText(frame, "Controls: [Q]uit | [R]eset | [A]uto | [1-4]Lanes | [S]tats | [F]ull | [C]am",
                    (x_left, y_offset), cv2.FONT_HERSHEY_SIMPLEX, 0.4, (200, 200, 200), 1)
         
         return frame
@@ -586,6 +586,10 @@ class USAD:
         # F - Toggle fullscreen
         elif key == ord('f') or key == ord('F'):
             self.toggle_fullscreen()
+        
+        # C - Cycle camera source
+        elif key == ord('c') or key == ord('C'):
+            self.cycle_camera()
         
         return True
     
@@ -656,6 +660,74 @@ class USAD:
         except Exception as e:
             print(f"[Config] Error reloading config: {e}")
     
+    def cycle_camera(self):
+        """Cycle to the next camera source configured in config.CAMERA_SOURCES"""
+        if not hasattr(config, "CAMERA_SOURCES") or not config.CAMERA_SOURCES:
+            print("\n[Camera] No CAMERA_SOURCES list defined in config.py")
+            return
+
+        orig_source = config.CAMERA_SOURCE
+        try:
+            current_idx = config.CAMERA_SOURCES.index(orig_source)
+            next_idx = (current_idx + 1) % len(config.CAMERA_SOURCES)
+            next_source = config.CAMERA_SOURCES[next_idx]
+        except ValueError:
+            next_source = config.CAMERA_SOURCES[0]
+
+        if next_source == orig_source:
+            print(f"\n[Camera] Only one camera source ({orig_source}) is available.")
+            return
+
+        print(f"\n[Camera] Switching from source {orig_source} to {next_source}...")
+        
+        # Release the current camera
+        if self.cap:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+
+        # Helper function to open a camera source
+        def open_source(src):
+            backends = [
+                ("DSHOW", cv2.CAP_DSHOW),
+                ("MSMF", getattr(cv2, "CAP_MSMF", cv2.CAP_ANY)),
+                ("ANY", cv2.CAP_ANY),
+            ]
+            for name, backend in backends:
+                try:
+                    cap = cv2.VideoCapture(src, backend)
+                    if cap is not None and cap.isOpened():
+                        # Set properties
+                        cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
+                        cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+                        cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
+                        # Warm up
+                        for _ in range(5):
+                            cap.read()
+                        print(f"[Camera] ✓ Opened source {src} using {name}")
+                        return cap
+                except Exception:
+                    continue
+            return None
+
+        new_cap = open_source(next_source)
+        if new_cap is not None:
+            self.cap = new_cap
+            config.CAMERA_SOURCE = next_source
+            print(f"[Camera] ✓ Switched to source {next_source}")
+        else:
+            print(f"[ERROR] Failed to open source {next_source}. Reverting to source {orig_source}...")
+            reverted_cap = open_source(orig_source)
+            if reverted_cap is not None:
+                self.cap = reverted_cap
+                config.CAMERA_SOURCE = orig_source
+                print(f"[Camera] ✓ Reverted to source {orig_source}")
+            else:
+                print(f"[CRITICAL] Could not re-open original source {orig_source} either!")
+                self.cap = None
+
     def run(self):
         """Main application loop"""
         if not self.initialize_camera():
@@ -685,11 +757,47 @@ class USAD:
         
         try:
             while True:
-                ret, frame = self.cap.read()
-                
-                if not ret:
-                    print("[ERROR] Failed to read frame")
-                    break
+                ret = False
+                frame = None
+                if self.cap is not None:
+                    try:
+                        ret, frame = self.cap.read()
+                    except Exception as e:
+                        print(f"[ERROR] Exception during camera read: {e}")
+                        ret = False
+
+                if self.cap is None or not ret:
+                    # Create black display error frame
+                    error_frame = np.zeros((config.CAMERA_HEIGHT, config.CAMERA_WIDTH, 3), dtype=np.uint8)
+                    cv2.putText(
+                        error_frame,
+                        f"CAMERA {config.CAMERA_SOURCE} DISCONNECTED / ERROR",
+                        (config.CAMERA_WIDTH // 2 - 350, config.CAMERA_HEIGHT // 2 - 20),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.9,
+                        (0, 0, 255),
+                        2,
+                    )
+                    cv2.putText(
+                        error_frame,
+                        "Press [C] to switch camera source or [Q] to quit",
+                        (config.CAMERA_WIDTH // 2 - 280, config.CAMERA_HEIGHT // 2 + 30),
+                        cv2.FONT_HERSHEY_SIMPLEX,
+                        0.6,
+                        (200, 200, 200),
+                        2,
+                    )
+                    # Draw standard status panel on error frame
+                    error_frame = self.draw_status_panel(error_frame, [], [], {})
+                    cv2.imshow(config.DISPLAY_WINDOW_NAME, error_frame)
+                    
+                    self.check_config_reload()
+                    
+                    key = cv2.waitKey(100) & 0xFF
+                    if key != 0xFF:
+                        if not self.handle_keyboard(key):
+                            break
+                    continue
                 
                 processed_frame = self.process_frame(frame)
                 
