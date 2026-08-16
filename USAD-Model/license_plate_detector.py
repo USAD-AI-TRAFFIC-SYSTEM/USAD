@@ -152,7 +152,11 @@ class LicensePlateDetector:
                         cleaned = "".join(corrected)
 
                     print(f"[OCR RAW READ] Found text: '{text}' -> Cleaned: '{cleaned}' (Conf: {conf*100:.1f}%)", flush=True)
-                    if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                    is_valid = False
+                    if 3 <= len(cleaned) <= 8:
+                        is_valid = True
+
+                    if is_valid:
                         px = int(min(pt[0] for pt in bbox))
                         py = int(min(pt[1] for pt in bbox))
                         pw = int(max(pt[0] for pt in bbox) - px)
