@@ -473,7 +473,9 @@ class USAD:
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
-        if config.SHOW_LANE_REGIONS:
+        is_camera_1 = (config.CAMERA_SOURCE == 1)
+
+        if config.SHOW_LANE_REGIONS and is_camera_1:
             for lane_key, lane_data in config.LANES.items():
                 region = np.array(lane_data["region"], dtype=np.int32)
                 color = self._get_lane_color(lane_key)
@@ -487,8 +489,9 @@ class USAD:
                 stop_line = lane_data["stop_line"]
                 cv2.line(frame, stop_line[0], stop_line[1], (0, 255, 255), 3)
         
-        intersection = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
-        cv2.polylines(frame, [intersection], True, (255, 0, 255), 2)
+        if is_camera_1:
+            intersection = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
+            cv2.polylines(frame, [intersection], True, (255, 0, 255), 2)
         
         if not self._no_car_idle_mode:
             frame = self.vehicle_detector.draw_vehicles(frame, vehicles)

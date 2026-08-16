@@ -1142,6 +1142,9 @@ class CameraTile(ttk.Frame):
         c = self._canvas
         c.delete("lane")
 
+        if config is not None and getattr(config, "CAMERA_SOURCE", None) != 1:
+            return
+
         polylines = lane_polylines_from_config()
         labels = lane_labels_from_config()
         if not polylines and not labels:
@@ -1383,6 +1386,9 @@ class FullscreenViewer(tk.Toplevel):
     def _draw_lane_polylines(self, frame_w: int, frame_h: int) -> None:
         c = self._canvas
         c.delete("lane")
+
+        if config is not None and getattr(config, "CAMERA_SOURCE", None) != 1:
+            return
 
         polylines = lane_polylines_from_config()
         labels = lane_labels_from_config()
