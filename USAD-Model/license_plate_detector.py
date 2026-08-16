@@ -129,10 +129,28 @@ class LicensePlateDetector:
             if not self.ocr_available or self.reader is None:
                 return []
             try:
-                results = self.reader.readtext(vehicle_roi)
+                results = self.reader.readtext(vehicle_roi, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
                 valid_plates = []
                 for (bbox, text, conf) in results:
                     cleaned = "".join(c for c in text if c.isalnum()).upper()
+                    # Correct character confusion for AAA999 pattern if length is 6
+                    if len(cleaned) == 6:
+                        corrected = []
+                        char_to_num = {'O': '0', 'Q': '0', 'D': '0', 'I': '1', 'L': '1', 'Z': '2', 'S': '5', 'B': '8', 'G': '6', 'T': '7'}
+                        num_to_char = {'0': 'O', '1': 'I', '2': 'Z', '5': 'S', '8': 'B'}
+                        for idx, char in enumerate(cleaned):
+                            if idx < 3:
+                                if char.isdigit() and char in num_to_char:
+                                    corrected.append(num_to_char[char])
+                                else:
+                                    corrected.append(char)
+                            else:
+                                if char.isalpha() and char in char_to_num:
+                                    corrected.append(char_to_num[char])
+                                else:
+                                    corrected.append(char)
+                        cleaned = "".join(corrected)
+
                     print(f"[OCR RAW READ] Found text: '{text}' -> Cleaned: '{cleaned}' (Conf: {conf*100:.1f}%)", flush=True)
                     if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
                         px = int(min(pt[0] for pt in bbox))
@@ -251,7 +269,7 @@ class LicensePlateDetector:
             return None, 0.0
 
         try:
-            results = self.reader.readtext(image)
+            results = self.reader.readtext(image, allowlist="ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789")
 
             if not results:
                 return None, 0.0
