@@ -582,13 +582,8 @@ class RealtimeDetectorEngine:
                         if self._license_plate_detector is not None:
                             res = self._license_plate_detector.get_result(999)
                             if res:
-                                plate_text, confidence, plate_bbox = res
-                                # Validate format: 3 alpha + 3 numeric
-                                cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
-                                print(f"[OCR RAW READ] Found text: '{plate_text}' -> Cleaned: '{cleaned}' (Conf: {confidence:.1f}%)", flush=True)
-                                if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                                for cleaned, confidence, plate_bbox in res:
                                     self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
-                                    print(f"  ↳ ✓ Format Match! Displaying plate: {cleaned}", flush=True)
 
                             self._license_plate_detector.submit_async(
                                 999,

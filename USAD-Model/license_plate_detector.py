@@ -122,8 +122,30 @@ class LicensePlateDetector:
         vehicle_roi: np.ndarray,
         origin_x: int,
         origin_y: int,
-    ) -> Optional[Tuple[str, float, Tuple[int, int, int, int]]]:
+    ):
         """Full plate-find + OCR pipeline — runs entirely in worker thread."""
+        h, w = vehicle_roi.shape[:2]
+        if w > 500:
+            if not self.ocr_available or self.reader is None:
+                return []
+            try:
+                results = self.reader.readtext(vehicle_roi)
+                valid_plates = []
+                for (bbox, text, conf) in results:
+                    cleaned = "".join(c for c in text if c.isalnum()).upper()
+                    print(f"[OCR RAW READ] Found text: '{text}' -> Cleaned: '{cleaned}' (Conf: {conf*100:.1f}%)", flush=True)
+                    if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                        px = int(min(pt[0] for pt in bbox))
+                        py = int(min(pt[1] for pt in bbox))
+                        pw = int(max(pt[0] for pt in bbox) - px)
+                        ph = int(max(pt[1] for pt in bbox) - py)
+                        global_bbox = (origin_x + px, origin_y + py, pw, ph)
+                        valid_plates.append((cleaned, conf * 100, global_bbox))
+                return valid_plates
+            except Exception as e:
+                print(f"[OCR Background Error] Full-frame OCR failed: {e}", flush=True)
+                return []
+
         plate_candidates = self._find_plate_candidates(vehicle_roi)
         if not plate_candidates:
             return None
