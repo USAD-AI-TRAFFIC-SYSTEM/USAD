@@ -310,7 +310,10 @@ class RealtimeDetectorEngine:
         if cv2 is None or config is None:
             return
 
-        if bool(getattr(config, "SHOW_LANE_REGIONS", True)):
+        with self._lock:
+            is_camera_1 = (self._camera_source == 1)
+
+        if bool(getattr(config, "SHOW_LANE_REGIONS", True)) and is_camera_1:
             for lane_key, lane_data in getattr(config, "LANES", {}).items():
                 try:
                     region = lane_data["region"]
@@ -355,7 +358,7 @@ class RealtimeDetectorEngine:
                     except Exception:
                         pass
 
-        if hasattr(config, "INTERSECTION_CENTER"):
+        if hasattr(config, "INTERSECTION_CENTER") and is_camera_1:
             try:
                 import numpy as np
                 intersection = np.array(getattr(config, "INTERSECTION_CENTER"), dtype=np.int32)
