@@ -108,6 +108,9 @@ class USAD:
         # When False, app.py renders the HUD instead of OpenCV.
         self.show_cv_panel = True
 
+        # Store detected license plates directly on Camera 2
+        self._detected_plates = {}
+
         # Detection/alert gating
         self._last_vehicle_seen_ts: float = time.time()
         self._no_car_idle_mode: bool = False
@@ -183,10 +186,15 @@ class USAD:
             print("[Arduino] ✗ Failed to connect")
             print("[Arduino] System will run in simulation mode")
             return False
-    
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single frame"""
-        vehicles = self.vehicle_detector.detect_vehicles(frame)
+        is_camera_1 = (config.CAMERA_SOURCE == 1)
+        is_camera_2 = (config.CAMERA_SOURCE == 2)
+
+        if is_camera_1:
+            vehicles = self.vehicle_detector.detect_vehicles(frame)
+        else:
+            vehicles = []
 
         now = time.time()
         if bool(getattr(self.vehicle_detector, "had_detections_this_frame", False)) or bool(
@@ -236,72 +244,22 @@ class USAD:
             self.event_logger.log_violation(violation)
             print(f"[VIOLATION] {violation.get_description()}", flush=True)
         
-        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION and is_camera_2:
+        if config.ENABLE_LICENSE_PLATE_DETECTION and is_camera_2:
             self._lp_frame_index += 1
-            every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
-            max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
-            cooldown = float(getattr(config, "LP_PER_VEHICLE_COOLDOWN_SECONDS", 2.0) or 2.0)
-            debug_terminal = bool(getattr(config, "LP_DEBUG_TERMINAL", False))
-            debug_every_n = int(getattr(config, "LP_DEBUG_PRINT_EVERY_N_FRAMES", every_n) or every_n)
-            if every_n <= 0:
-                every_n = 1
-            if max_per_frame < 0:
-                max_per_frame = 0
-            if debug_every_n <= 0:
-                debug_every_n = 1
+            # Retrieve async OCR result from the dummy vehicle ID 999
+            res = self.license_plate_detector.get_result(999)
+            if res:
+                plate_text, confidence, plate_bbox = res
+                cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
+                if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                    self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
 
-            debug_this_frame = debug_terminal and ((self._lp_frame_index % debug_every_n) == 0)
-
-            if (self._lp_frame_index % every_n) == 0 and max_per_frame > 0:
-                now_ts = time.time()
-                attempts = 0
-                successes = 0
-                for vehicle in vehicles:
-                    if vehicle.license_plate:
-                        continue
-                    last_ts = float(self._lp_last_attempt_ts.get(int(vehicle.id), 0.0) or 0.0)
-                    if cooldown > 0 and (now_ts - last_ts) < cooldown:
-                        continue
-                    self._lp_last_attempt_ts[int(vehicle.id)] = now_ts
-                    result = self.license_plate_detector.detect_license_plate(frame, vehicle.bbox)
-                    debug_info = dict(getattr(self.license_plate_detector, "last_debug_info", {}) or {})
-                    if result:
-                        plate_text, confidence, plate_bbox = result
-                        # Validate format: 3 alpha + 3 numeric
-                        cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
-                        if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
-                            vehicle.license_plate = cleaned
-                            vehicle.license_plate_confidence = confidence
-                            successes += 1
-                            if debug_this_frame:
-                                print(
-                                    f"[LP DEBUG] vehicle_id={vehicle.id} status=SUCCESS text={cleaned} conf={confidence:.1f}% "
-                                    f"candidates={debug_info.get('candidate_count', 0)}"
-                                )
-                        else:
-                            if debug_this_frame:
-                                print(
-                                    f"[LP DEBUG] vehicle_id={vehicle.id} status=INVALID_FORMAT text={cleaned} raw={plate_text}"
-                                )
-                    elif debug_this_frame:
-                        print(
-                            f"[LP DEBUG] vehicle_id={vehicle.id} status=NO_READ reason={debug_info.get('status', 'unknown')} "
-                            f"candidates={debug_info.get('candidate_count', 0)}"
-                        )
-                    attempts += 1
-                    if attempts >= max_per_frame:
-                        break
-
-                if debug_this_frame:
-                    print(
-                        f"[LP DEBUG] frame={self._lp_frame_index} attempts={attempts} successes={successes} "
-                        f"vehicles={len(vehicles)} ocr_available={self.license_plate_detector.ocr_available}"
-                    )
-            elif debug_this_frame and len(vehicles) == 0:
-                print(
-                    f"[LP DEBUG] frame={self._lp_frame_index} skipped=no_vehicles "
-                    f"ocr_available={self.license_plate_detector.ocr_available}"
-                )
+            # Submit next frame asynchronously if queue is not full
+            self.license_plate_detector.submit_async(
+                999,
+                frame,
+                (0, 0, frame.shape[1], frame.shape[0])
+            )
         
         self.update_traffic_control(lane_counts_for_control, accidents)
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
@@ -505,7 +463,7 @@ class USAD:
             intersection = np.array(config.INTERSECTION_CENTER, dtype=np.int32)
             cv2.polylines(frame, [intersection], True, (255, 0, 255), 2)
         
-        if not self._no_car_idle_mode:
+        if not self._no_car_idle_mode and is_camera_1:
             frame = self.vehicle_detector.draw_vehicles(frame, vehicles)
             frame = self.accident_detector.draw_stopped_vehicles(frame, vehicles)
             frame = self.accident_detector.draw_accidents(frame)
@@ -513,10 +471,19 @@ class USAD:
             if config.SHOW_VIOLATIONS:
                 frame = self.violation_detector.draw_violations(frame, recent_only=True)
         
-        if config.ENABLE_LICENSE_PLATE_DETECTION:
-            for vehicle in vehicles:
-                if vehicle.license_plate:
-                    pass
+        if config.ENABLE_LICENSE_PLATE_DETECTION and is_camera_2:
+            try:
+                now_ts = time.time()
+                to_delete = []
+                for plate_text, (plate_bbox, confidence, ts) in list(self._detected_plates.items()):
+                    if (now_ts - ts) > 2.0:
+                        to_delete.append(plate_text)
+                    else:
+                        frame = self.license_plate_detector.draw_license_plate(frame, plate_text, plate_bbox, confidence)
+                for p in to_delete:
+                    self._detected_plates.pop(p, None)
+            except Exception:
+                pass
 
         # ── Only draw the OpenCV HUD when running standalone (main.py directly).
         # ── When app.py sets self.show_cv_panel = False, this block is skipped

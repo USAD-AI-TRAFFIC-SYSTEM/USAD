@@ -154,6 +154,7 @@ class RealtimeDetectorEngine:
         self._phase_start_time: float = time.time()
         self._lane_green_duration: float = float(getattr(config, "GREEN_TIME", 30)) if config is not None else 30.0
         self._new_camera_source = None
+        self._detected_plates = {}
 
     def cycle_camera(self) -> None:
         if config is None or not getattr(config, "CAMERA_SOURCES", None):
@@ -382,6 +383,23 @@ class RealtimeDetectorEngine:
         except Exception:
             pass
 
+        with self._lock:
+            is_camera_2 = (self._camera_source == 2)
+        if is_camera_2 and config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
+            try:
+                now_ts = time.time()
+                to_delete = []
+                for plate_text, (plate_bbox, confidence, ts) in list(self._detected_plates.items()):
+                    if (now_ts - ts) > 2.0:
+                        to_delete.append(plate_text)
+                    else:
+                        if self._license_plate_detector is not None:
+                            frame_bgr = self._license_plate_detector.draw_license_plate(frame_bgr, plate_text, plate_bbox, confidence)
+                for p in to_delete:
+                    self._detected_plates.pop(p, None)
+            except Exception:
+                pass
+
     def _run(self) -> None:
         if cv2 is None:
             with self._lock:
@@ -514,12 +532,12 @@ class RealtimeDetectorEngine:
             is_camera_1 = (self._camera_source == 1)
             is_camera_2 = (self._camera_source == 2)
 
-            try:
-                vehicles = self._vehicle_detector.detect_vehicles(frame_bgr)
-            except Exception:
-                vehicles = []
-
             if is_camera_1:
+                try:
+                    vehicles = self._vehicle_detector.detect_vehicles(frame_bgr)
+                except Exception:
+                    vehicles = []
+
                 try:
                     self._update_signal_cycle()
                 except Exception:
@@ -562,17 +580,19 @@ class RealtimeDetectorEngine:
                 try:
                     if config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
                         if self._license_plate_detector is not None:
-                            for v in vehicles:
-                                if getattr(v, "license_plate", None):
-                                    continue
-                                res = self._license_plate_detector.detect_license_plate(frame_bgr, v.bbox)
-                                if res:
-                                    plate_text, confidence, _plate_bbox = res
-                                    # Validate format: 3 alpha + 3 numeric
-                                    cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
-                                    if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
-                                        v.license_plate = cleaned
-                                        v.license_plate_confidence = confidence
+                            res = self._license_plate_detector.get_result(999)
+                            if res:
+                                plate_text, confidence, plate_bbox = res
+                                # Validate format: 3 alpha + 3 numeric
+                                cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
+                                if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
+                                    self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
+
+                            self._license_plate_detector.submit_async(
+                                999,
+                                frame_bgr,
+                                (0, 0, frame_bgr.shape[1], frame_bgr.shape[0])
+                            )
                 except Exception:
                     pass
 
