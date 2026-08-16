@@ -504,62 +504,67 @@ class RealtimeDetectorEngine:
 
             vehicles = []
             accidents = []
+            is_camera_1 = (self._camera_source == 1)
+            is_camera_2 = (self._camera_source == 2)
+
             try:
                 vehicles = self._vehicle_detector.detect_vehicles(frame_bgr)
             except Exception:
                 vehicles = []
 
-            try:
-                self._update_signal_cycle()
-            except Exception:
-                pass
+            if is_camera_1:
+                try:
+                    self._update_signal_cycle()
+                except Exception:
+                    pass
 
-            try:
-                lane_counts = self._vehicle_detector.get_vehicle_count_by_lane()
-            except Exception:
-                lane_counts = {}
+                try:
+                    lane_counts = self._vehicle_detector.get_vehicle_count_by_lane()
+                except Exception:
+                    lane_counts = {}
 
-            try:
-                accidents = self._accident_detector.detect_accidents(vehicles, frame=frame_bgr)
-                confirmed = self._accident_detector.get_confirmed_accidents()
-            except Exception:
-                accidents = []
-                confirmed = []
+                try:
+                    accidents = self._accident_detector.detect_accidents(vehicles, frame=frame_bgr)
+                    confirmed = self._accident_detector.get_confirmed_accidents()
+                except Exception:
+                    accidents = []
+                    confirmed = []
 
-            # Emergency notify + log confirmed accidents.
-            try:
-                if self._emergency_notifier is not None and self._event_logger is not None:
-                    for acc in confirmed:
-                        if not getattr(acc, "notified", False):
-                            notified = bool(self._emergency_notifier.notify_accident(acc))
-                            if notified:
-                                self._event_logger.log_accident(acc, notified=True)
-            except Exception:
-                pass
+                # Emergency notify + log confirmed accidents.
+                try:
+                    if self._emergency_notifier is not None and self._event_logger is not None:
+                        for acc in confirmed:
+                            if not getattr(acc, "notified", False):
+                                notified = bool(self._emergency_notifier.notify_accident(acc))
+                                if notified:
+                                    self._event_logger.log_accident(acc, notified=True)
+                except Exception:
+                    pass
 
-            # Violations + log.
-            try:
-                new_violations = self._violation_detector.detect_violations(vehicles)
-                if self._event_logger is not None:
-                    for vio in new_violations:
-                        self._event_logger.log_violation(vio)
-            except Exception:
-                new_violations = []
+                # Violations + log.
+                try:
+                    new_violations = self._violation_detector.detect_violations(vehicles)
+                    if self._event_logger is not None:
+                        for vio in new_violations:
+                            self._event_logger.log_violation(vio)
+                except Exception:
+                    new_violations = []
 
             # License plate.
-            try:
-                if config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
-                    if self._license_plate_detector is not None:
-                        for v in vehicles:
-                            if getattr(v, "license_plate", None):
-                                continue
-                            res = self._license_plate_detector.detect_license_plate(frame_bgr, v.bbox)
-                            if res:
-                                plate_text, confidence, _plate_bbox = res
-                                v.license_plate = plate_text
-                                v.license_plate_confidence = confidence
-            except Exception:
-                pass
+            if is_camera_2:
+                try:
+                    if config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
+                        if self._license_plate_detector is not None:
+                            for v in vehicles:
+                                if getattr(v, "license_plate", None):
+                                    continue
+                                res = self._license_plate_detector.detect_license_plate(frame_bgr, v.bbox)
+                                if res:
+                                    plate_text, confidence, _plate_bbox = res
+                                    v.license_plate = plate_text
+                                    v.license_plate_confidence = confidence
+                except Exception:
+                    pass
 
             # Draw the same interface visuals your pipeline already provides.
             try:

@@ -208,9 +208,13 @@ class USAD:
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane(include_intersection=True)
         lane_counts_for_control = {k: int(lane_counts.get(k, 0)) for k in config.LANES.keys()}
 
-        self.update_signal_cycle(lane_counts_for_control)
+        is_camera_1 = (config.CAMERA_SOURCE == 1)
+        is_camera_2 = (config.CAMERA_SOURCE == 2)
+
+        if is_camera_1:
+            self.update_signal_cycle(lane_counts_for_control)
         
-        if self._no_car_idle_mode:
+        if self._no_car_idle_mode or not is_camera_1:
             accidents = []
             confirmed_accidents = []
         else:
@@ -223,7 +227,7 @@ class USAD:
                 if notified:
                     self.event_logger.log_accident(accident, notified=True)
         
-        if self._no_car_idle_mode:
+        if self._no_car_idle_mode or not is_camera_1:
             new_violations = []
         else:
             new_violations = self.violation_detector.detect_violations(vehicles)
@@ -232,7 +236,7 @@ class USAD:
             self.event_logger.log_violation(violation)
             print(f"[VIOLATION] {violation.get_description()}", flush=True)
         
-        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION:
+        if (not self._no_car_idle_mode) and config.ENABLE_LICENSE_PLATE_DETECTION and is_camera_2:
             self._lp_frame_index += 1
             every_n = int(getattr(config, "LP_DETECT_EVERY_N_FRAMES", 10) or 10)
             max_per_frame = int(getattr(config, "LP_MAX_VEHICLES_PER_FRAME", 1) or 1)
