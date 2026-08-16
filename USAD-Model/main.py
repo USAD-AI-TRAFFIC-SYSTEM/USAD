@@ -251,8 +251,10 @@ class USAD:
             if res:
                 plate_text, confidence, plate_bbox = res
                 cleaned = "".join(c for c in plate_text if c.isalnum()).upper()
+                print(f"[OCR RAW READ] Found text: '{plate_text}' -> Cleaned: '{cleaned}' (Conf: {confidence:.1f}%)", flush=True)
                 if len(cleaned) == 6 and cleaned[:3].isalpha() and cleaned[3:].isdigit():
                     self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
+                    print(f"  ↳ ✓ Format Match! Displaying plate: {cleaned}", flush=True)
 
             # Submit next frame asynchronously if queue is not full
             self.license_plate_detector.submit_async(

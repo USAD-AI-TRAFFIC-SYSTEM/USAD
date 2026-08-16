@@ -314,12 +314,12 @@ ILLEGAL_TURN_FRAMES = 5  # frames to confirm illegal turn
 
 # License plate detection
 ENABLE_LICENSE_PLATE_DETECTION = True
-LP_MIN_WIDTH = 40  # lowered for toy car printed tape labels
-LP_MAX_WIDTH = 250
-LP_MIN_HEIGHT = 12  # lowered for toy car scale
-LP_MAX_HEIGHT = 80
-LP_ASPECT_RATIO_MIN = 1.8
-LP_ASPECT_RATIO_MAX = 8.0  # more flexible for various tape sizes
+LP_MIN_WIDTH = 20  # lowered for toy car printed tape labels
+LP_MAX_WIDTH = 600
+LP_MIN_HEIGHT = 8  # lowered for toy car scale
+LP_MAX_HEIGHT = 200
+LP_ASPECT_RATIO_MIN = 1.2
+LP_ASPECT_RATIO_MAX = 10.0  # more flexible for various tape sizes
 
 # Keep these conservative to avoid scanning the entire car (performance).
 LP_VEHICLE_PADDING_PX = 10
