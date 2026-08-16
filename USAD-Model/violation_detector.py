@@ -247,11 +247,15 @@ class ViolationDetector:
             return 0.0
 
         # 2D cross product magnitude gives signed area; divide by |v| for distance.
-        dist = float(np.cross(v, (p - p1)) / denom)
+        dp = p - p1
+        cross_val = v[0] * dp[1] - v[1] * dp[0]
+        dist = float(cross_val / denom)
 
         # Orient sign so the intersection centroid is on the positive side.
         ic = np.array(self._intersection_centroid, dtype=np.float32)
-        dist_ic = float(np.cross(v, (ic - p1)) / denom)
+        dic = ic - p1
+        cross_ic = v[0] * dic[1] - v[1] * dic[0]
+        dist_ic = float(cross_ic / denom)
         if dist_ic < 0:
             dist = -dist
         return dist
