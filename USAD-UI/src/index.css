@@ -1,0 +1,77 @@
+@import "tailwindcss";
+
+/* ── USAD Brand Design System — Light Mode ─────────────────── */
+/* Primary: #F97316 (USAD brand orange)                        */
+/* Secondary: #0891B2 (teal)                                   */
+/* Page BG: #F3F4F6 (gray-100)                                 */
+/* Card: #FFFFFF                                               */
+/* Border: #E5E7EB (gray-200)                                  */
+/* Text primary: #111827                                       */
+/* Text secondary: #6B7280                                     */
+
+:root {
+  --usad-orange: #F97316;
+  --usad-teal: #0891B2;
+  --usad-bg: #F3F4F6;
+  --usad-card: #FFFFFF;
+  --usad-border: #E5E7EB;
+  --usad-text: #111827;
+  --usad-muted: #6B7280;
+}
+
+/* ── Base ───────────────────────────────────────────────────── */
+*, *::before, *::after {
+  border-color: var(--usad-border);
+}
+
+body {
+  background-color: var(--usad-bg);
+  color: var(--usad-text);
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
+  font-family: "Inter", "Segoe UI", system-ui, -apple-system, sans-serif;
+}
+
+/* ── Scrollbar ──────────────────────────────────────────────── */
+::-webkit-scrollbar { width: 5px; height: 5px; }
+::-webkit-scrollbar-track { background: transparent; }
+::-webkit-scrollbar-thumb { background: #D1D5DB; border-radius: 3px; }
+::-webkit-scrollbar-thumb:hover { background: #9CA3AF; }
+
+/* ── Animations ─────────────────────────────────────────────── */
+@keyframes slide-in {
+  from { opacity: 0; transform: translateX(-20px); }
+  to   { opacity: 1; transform: translateX(0); }
+}
+
+@keyframes pulse-glow-orange {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(249,115,22,0.3); }
+  50%       { box-shadow: 0 0 0 8px rgba(249,115,22,0); }
+}
+
+.animate-slide-in     { animation: slide-in 0.3s ease-out forwards; }
+.animate-pulse-orange { animation: pulse-glow-orange 2s infinite; }
+
+/* ── White Glassmorphic Card (on video background) ──────────── */
+.glass-card {
+  background: rgba(255, 255, 255, 0.92);
+  backdrop-filter: blur(16px);
+  -webkit-backdrop-filter: blur(16px);
+  border: 1px solid rgba(229, 231, 235, 0.80);
+  border-radius: 14px;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.12), 0 1px 4px rgba(0,0,0,0.06);
+}
+
+/* ── Solid white card (analytics / non-overlay) ─────────────── */
+.solid-card {
+  background: #FFFFFF;
+  border: 1px solid #E5E7EB;
+  border-radius: 12px;
+  box-shadow: 0 1px 4px rgba(0,0,0,0.05);
+}
+
+/* ── LED signal lights ───────────────────────────────────────── */
+.led-active-green  { background: #10B981; box-shadow: 0 0 10px rgba(16,185,129,0.6); }
+.led-active-amber  { background: #F59E0B; box-shadow: 0 0 10px rgba(245,158,11,0.6); }
+.led-active-red    { background: #EF4444; box-shadow: 0 0 10px rgba(239,68,68,0.6); }
+.led-inactive      { background: #D1D5DB; }

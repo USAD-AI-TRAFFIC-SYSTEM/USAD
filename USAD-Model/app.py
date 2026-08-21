@@ -1,12 +1,11 @@
 import os
 import sys
 import time
+import desktop_app
 
-# ── Fast-path: launch dashboard without loading heavy modules ─────────────────
-if "--dashboard" in sys.argv:
-    from dashboard import DashboardApp
-    dash = DashboardApp()
-    dash.mainloop()
+# ── Delegate to modern React UI desktop application ────────────────────────
+if __name__ == "__main__":
+    desktop_app.main()
     sys.exit(0)
 
 import cv2

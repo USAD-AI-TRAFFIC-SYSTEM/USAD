@@ -29,22 +29,24 @@ else:
 
 # PyInstaller arguments  (Windows uses ; as --add-data separator)
 pyinstaller_args = [
-    str(usad_model / "app.py"),           # Main app file
+    str(usad_model / "desktop_app.py"),    # Main launcher
     "--name=USAD",                         # Executable name
     "--onefile",                           # Single executable file
-    "--console",                           # Keep console for now to see errors (change to --windowed later)
+    "--console",                           # Keep console window
     f"--icon={icon_arg}" if icon_arg else "",  # App icon
     
     # Add local USAD-Model modules so PyInstaller can find them
     f"--paths={usad_model}",
     
-    # Add data files (assets, fonts, etc.)  — use ; on Windows
+    # Add data files (assets & built React UI dist) — use ; on Windows
     f"--add-data={usad_model / 'assets'};assets",
-    # Note: logs/ is NOT bundled — created at runtime next to the EXE
+    f"--add-data={project_root / 'USAD-UI' / 'dist'};USAD-UI/dist",
     
     # Hidden imports — local modules
     "--hidden-import=main",
     "--hidden-import=config",
+    "--hidden-import=server",
+    "--hidden-import=desktop_app",
     "--hidden-import=vehicle_detector",
     "--hidden-import=accident_detector",
     "--hidden-import=violation_detector",
@@ -52,29 +54,25 @@ pyinstaller_args = [
     "--hidden-import=traffic_controller",
     "--hidden-import=emergency_notifier",
     "--hidden-import=event_logger",
-    "--hidden-import=dashboard",
     
     # Hidden imports — third party packages
     "--hidden-import=cv2",
     "--hidden-import=numpy",
-    "--hidden-import=customtkinter",
-    "--hidden-import=PIL",
-    "--hidden-import=PIL.Image",
-    "--hidden-import=PIL.ImageTk",
-    "--hidden-import=PIL._tkinter_finder",
+    "--hidden-import=fastapi",
+    "--hidden-import=uvicorn",
+    "--hidden-import=starlette",
+    "--hidden-import=websockets",
     "--hidden-import=easyocr",
     "--hidden-import=serial",
     "--hidden-import=serial.tools",
     "--hidden-import=serial.tools.list_ports",
     "--hidden-import=serial.tools.list_ports_windows",
     
-    # Collect all package data (themes, assets, models)
-    "--collect-all=customtkinter",
+    # Collect all package data
+    "--collect-all=fastapi",
+    "--collect-all=uvicorn",
     "--collect-all=easyocr",
     "--collect-all=PIL",
-    
-    # Ensure tkinter is bundled
-    "--collect-all=tkinter",
     
     # Output directory
     f"--distpath={dist_folder}",
