@@ -329,69 +329,61 @@ class USAD:
                 self.violation_detector.set_traffic_signal(lane, "RED")
 
     def update_signal_cycle(self, lane_counts: dict):
-        """Advance the traffic signal cycle. Simulates signals when Arduino is disconnected."""
+        """Advance the traffic signal cycle and sync Arduino on every transition.
+        
+        Python is always the single source of truth. Whether Arduino is connected
+        or not, the same timing logic runs. When Arduino is connected, every phase
+        change is sent as an explicit command.
+        """
         now = time.time()
         self.arduino_connected = self._is_arduino_connected()
 
-        simulate = bool(getattr(config, "SIMULATE_SIGNALS_WHEN_NO_ARDUINO", True)) and not self.arduino_connected
-        if not simulate:
-            if self.software_auto_mode:
-                arduino_green_time = float(getattr(config, "GREEN_TIME", 25))
-                arduino_yellow_time = float(getattr(config, "YELLOW_TIME", 4))
-
-                if self.current_active_lane is None:
-                    self.current_active_lane = self._lane_order()[0]
-                    self.current_phase = "GREEN"
-                    self.phase_start_time = now
-                    self.lane_green_duration = arduino_green_time
-                    self._apply_signal_states(self.current_active_lane, "GREEN")
-                    return
-
-                if self.current_phase == "GREEN":
-                    if now - self.phase_start_time >= arduino_green_time:
-                        self.current_phase = "YELLOW"
-                        self.phase_start_time = now
-                        self._apply_signal_states(self.current_active_lane, "YELLOW")
-                elif self.current_phase == "YELLOW":
-                    if now - self.phase_start_time >= arduino_yellow_time:
-                        next_lane = self._get_next_lane(self.current_active_lane)
-                        self.current_active_lane = next_lane
-                        self.current_phase = "GREEN"
-                        self.phase_start_time = now
-                        self.lane_green_duration = arduino_green_time
-                        self._apply_signal_states(next_lane, "GREEN")
-            return
-
-        if not self.software_auto_mode and self.current_active_lane is None:
-            self.activate_lane(self._lane_order()[0])
-            self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
-            self._apply_signal_states(self.current_active_lane, "GREEN")
-            return
-
+        # Initialize if no lane active yet
         if self.current_active_lane is None:
-            self.activate_lane(self._lane_order()[0])
+            self.current_active_lane = self._lane_order()[0]
+            self.current_phase = "GREEN"
+            self.phase_start_time = now
             self.lane_green_duration = self._compute_green_duration(self.current_active_lane, lane_counts)
             self._apply_signal_states(self.current_active_lane, "GREEN")
+            self._sync_arduino(self.current_active_lane, "GREEN")
             return
 
+        # Manual mode: stay on current lane, keep green
         if not self.software_auto_mode:
-            self.current_phase = "GREEN"
-            self._apply_signal_states(self.current_active_lane, "GREEN")
+            if self.current_phase != "GREEN":
+                self.current_phase = "GREEN"
+                self._apply_signal_states(self.current_active_lane, "GREEN")
+                self._sync_arduino(self.current_active_lane, "GREEN")
             return
 
+        # Auto mode: cycle GREEN → YELLOW → next lane GREEN
         if self.current_phase == "GREEN":
-            if now - self.phase_start_time >= float(self.lane_green_duration):
+            green_duration = float(self.lane_green_duration)
+            if now - self.phase_start_time >= green_duration:
+                # Transition to YELLOW
                 self.current_phase = "YELLOW"
                 self.phase_start_time = now
                 self._apply_signal_states(self.current_active_lane, "YELLOW")
+                self._sync_arduino(self.current_active_lane, "YELLOW")
+
         elif self.current_phase == "YELLOW":
-            if now - self.phase_start_time >= float(getattr(config, "YELLOW_TIME", 3)):
+            yellow_time = float(getattr(config, "YELLOW_TIME", 4))
+            if now - self.phase_start_time >= yellow_time:
+                # Transition to next lane GREEN
                 next_lane = self._get_next_lane(self.current_active_lane)
                 self.current_active_lane = next_lane
                 self.current_phase = "GREEN"
                 self.phase_start_time = now
                 self.lane_green_duration = self._compute_green_duration(next_lane, lane_counts)
                 self._apply_signal_states(next_lane, "GREEN")
+                self._sync_arduino(next_lane, "GREEN")
+
+    def _sync_arduino(self, lane_key: str, phase: str):
+        """Send signal command to Arduino if connected."""
+        if self._is_arduino_connected():
+            success = self.traffic_controller.set_signal(lane_key, phase)
+            if success:
+                print(f"[Arduino Sync] {lane_key} -> {phase}", flush=True)
     
     def update_traffic_control(self, lane_counts: dict, accidents: list):
         """Update traffic light control based on AI logic"""
@@ -445,13 +437,8 @@ class USAD:
         self.current_phase = "GREEN"
         self.phase_start_time = time.time()
         
-        self.violation_detector.set_traffic_signal(lane_key, "GREEN")
-        for other_lane in config.LANES.keys():
-            if other_lane != lane_key:
-                self.violation_detector.set_traffic_signal(other_lane, "RED")
-        
-        if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
-            self.traffic_controller.activate_lane_by_name(lane_key)
+        self._apply_signal_states(lane_key, "GREEN")
+        self._sync_arduino(lane_key, "GREEN")
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""

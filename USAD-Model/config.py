@@ -91,36 +91,36 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(485, 0), (710, 0), (720, 190), (485, 190)],
-        "stop_line": [(480, 195), (720, 190)],
+        "region": [(473, 2), (693, 2), (717, 189), (476, 227)],
+        "stop_line": [(476, 227), (717, 189)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
         "name": "South",
-        "region": [(465, 720), (730, 720), (720, 420), (480, 420)],
-        "stop_line": [(480, 420), (720, 420)],
+        "region": [(481, 718), (774, 719), (744, 430), (481, 454)],
+        "stop_line": [(481, 454), (744, 430)],
         "direction": "vertical",
         "arduino_cmd": "LANE2"
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(1020, 180), (1040, 410), (720, 415), (720, 190)],
-        "stop_line": [(720, 189), (720, 420)],
+        "region": [(1018, 153), (1080, 393), (744, 430), (717, 189)],
+        "stop_line": [(717, 189), (744, 430)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(165, 195), (145, 422), (480, 420), (480, 195)],
-        "stop_line": [(480, 195), (480, 420)],
+        "region": [(164, 251), (139, 484), (481, 454), (476, 227)],
+        "stop_line": [(476, 227), (481, 454)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
     },
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
+INTERSECTION_CENTER = [(476, 227), (717, 189), (744, 430), (481, 454)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -140,19 +140,19 @@ def _load_lane_overrides():
         inter = data.get("intersection_center")
         if inter:
             global INTERSECTION_CENTER
-            INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
+            INTERSECTION_CENTER = [(476, 227), (717, 189), (744, 430), (481, 454)]
     except Exception:
         pass
 
 _load_lane_overrides()
 
 # Timing (seconds)
-GREEN_TIME = 25   # seconds (match Arduino)
-YELLOW_TIME = 4   # seconds (match Arduino)
+GREEN_TIME = 10   # seconds
+YELLOW_TIME = 4   # seconds
 RED_TIME = 30
 
 # Adaptive timing
-MIN_GREEN_TIME = 3
+MIN_GREEN_TIME = 10
 MAX_GREEN_TIME = 30
 CONGESTION_THRESHOLD = 2
 
