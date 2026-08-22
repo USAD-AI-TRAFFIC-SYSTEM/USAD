@@ -347,9 +347,191 @@ async def logs_traffic():
 
 
 # ---------------------------------------------------------------------------
+# Lane calibration endpoints
+# ---------------------------------------------------------------------------
+@app.get("/api/config/lanes")
+async def get_lane_config():
+    """Return current lane polygons, stop lines, and intersection center."""
+    lanes = {}
+    for lk, data in config.LANES.items():
+        lanes[lk] = {
+            "name": data["name"],
+            "region": data["region"],
+            "stop_line": data["stop_line"],
+            "direction": data["direction"],
+            "arduino_cmd": data["arduino_cmd"],
+        }
+    return {
+        "lanes": lanes,
+        "intersection_center": list(config.INTERSECTION_CENTER),
+        "camera_width": config.CAMERA_WIDTH,
+        "camera_height": config.CAMERA_HEIGHT,
+    }
+
+
+@app.get("/api/config/lanes/defaults")
+async def get_lane_defaults():
+    """Return the original default lane coordinates (never modified)."""
+    lanes = {}
+    for lk, data in config.DEFAULT_LANES.items():
+        lanes[lk] = {
+            "name": data["name"],
+            "region": data["region"],
+            "stop_line": data["stop_line"],
+            "direction": data["direction"],
+            "arduino_cmd": data["arduino_cmd"],
+        }
+    return {
+        "lanes": lanes,
+        "intersection_center": list(config.DEFAULT_INTERSECTION_CENTER),
+        "camera_width": config.CAMERA_WIDTH,
+        "camera_height": config.CAMERA_HEIGHT,
+    }
+
+
+@app.post("/api/config/lanes")
+async def save_lane_config(payload: dict):
+    """Save new lane polygons, stop lines, and intersection center to config.py."""
+    import re
+
+    lanes_data = payload.get("lanes", {})
+    intersection_data = payload.get("intersection_center", None)
+
+    if not lanes_data and not intersection_data:
+        return JSONResponse({"ok": False, "error": "No data provided"}, 400)
+
+    # Determine where to save: when frozen (exe), save a JSON override file next to exe.
+    # When running from source, write directly to config.py.
+    is_frozen = getattr(sys, 'frozen', False)
+
+    if is_frozen:
+        # Save as JSON override next to the exe
+        import json
+        override_path = Path(sys.executable).parent / "lane_config.json"
+        override_data = {"lanes": {}, "intersection_center": None}
+        if override_path.exists():
+            try:
+                override_data = json.loads(override_path.read_text(encoding="utf-8"))
+            except Exception:
+                pass
+
+        if lanes_data:
+            for lk, d in lanes_data.items():
+                override_data["lanes"][lk] = {
+                    "name": d.get("name", ""),
+                    "region": [list(p) for p in d["region"]],
+                    "stop_line": [list(p) for p in d["stop_line"]],
+                    "direction": d.get("direction", ""),
+                    "arduino_cmd": d.get("arduino_cmd", ""),
+                }
+                # Update runtime config
+                config.LANES[lk]["region"] = [tuple(p) for p in d["region"]]
+                config.LANES[lk]["stop_line"] = [tuple(p) for p in d["stop_line"]]
+
+        if intersection_data:
+            inter = [list(p) for p in intersection_data]
+            override_data["intersection_center"] = inter
+            config.INTERSECTION_CENTER = [tuple(p) for p in intersection_data]
+
+        override_path.write_text(json.dumps(override_data, indent=2), encoding="utf-8")
+        return {"ok": True, "message": "Lane configuration saved (override file)"}
+
+    # --- Running from source: write directly to config.py ---
+    config_path = _THIS_DIR / "config.py"
+    content = config_path.read_text(encoding="utf-8")
+
+    # Update LANES in config
+    if lanes_data:
+        lanes_str = "LANES = {\n"
+        lane_order = ["LANE1", "LANE2", "LANE3", "LANE4"]
+        for lk in lane_order:
+            if lk in lanes_data:
+                d = lanes_data[lk]
+                region = [tuple(p) for p in d["region"]]
+                stop_line = [tuple(p) for p in d["stop_line"]]
+                name = d.get("name", config.LANES[lk]["name"])
+                direction = d.get("direction", config.LANES[lk]["direction"])
+                arduino_cmd = d.get("arduino_cmd", config.LANES[lk]["arduino_cmd"])
+            else:
+                # Keep existing
+                orig = config.LANES[lk]
+                region = orig["region"]
+                stop_line = orig["stop_line"]
+                name = orig["name"]
+                direction = orig["direction"]
+                arduino_cmd = orig["arduino_cmd"]
+
+            lanes_str += f'    "{lk}": {{  # {name}\n'
+            lanes_str += f'        "name": "{name}",\n'
+            lanes_str += f'        "region": {region},\n'
+            lanes_str += f'        "stop_line": {stop_line},\n'
+            lanes_str += f'        "direction": "{direction}",\n'
+            lanes_str += f'        "arduino_cmd": "{arduino_cmd}"\n'
+            lanes_str += '    },\n'
+        lanes_str += "}"
+
+        # Replace the active LANES block using the marker comment
+        # Look for "# Active lane coordinates" line and replace from LANES = { to the closing }
+        marker = "# Active lane coordinates"
+        marker_idx = content.find(marker)
+        if marker_idx == -1:
+            # Fallback: find "LANES = {" that's NOT preceded by "DEFAULT_"
+            marker_idx = content.find("\nLANES = {")
+            if marker_idx != -1:
+                marker_idx += 1  # skip the newline
+
+        if marker_idx != -1:
+            # Find "LANES = {" after the marker
+            lanes_start = content.find("LANES = {", marker_idx)
+            if lanes_start != -1:
+                # Count braces to find the matching close
+                brace_count = 0
+                end = lanes_start
+                for i in range(lanes_start, len(content)):
+                    if content[i] == '{':
+                        brace_count += 1
+                    elif content[i] == '}':
+                        brace_count -= 1
+                        if brace_count == 0:
+                            end = i + 1
+                            break
+                content = content[:lanes_start] + lanes_str + content[end:]
+
+        # Update runtime config
+        for lk in lane_order:
+            if lk in lanes_data:
+                d = lanes_data[lk]
+                config.LANES[lk]["region"] = [tuple(p) for p in d["region"]]
+                config.LANES[lk]["stop_line"] = [tuple(p) for p in d["stop_line"]]
+
+    # Update INTERSECTION_CENTER
+    if intersection_data:
+        inter = [tuple(p) for p in intersection_data]
+        inter_str = f"INTERSECTION_CENTER = {inter}"
+        # Only replace the standalone INTERSECTION_CENTER (not DEFAULT_INTERSECTION_CENTER)
+        inter_pattern = r"(?<!DEFAULT_)INTERSECTION_CENTER\s*=\s*\[.*?\]"
+        content = re.sub(inter_pattern, inter_str, content, flags=re.DOTALL)
+
+        # Update runtime config
+        config.INTERSECTION_CENTER = inter
+
+    config_path.write_text(content, encoding="utf-8")
+
+    # Force immediate config reload so the live view updates without waiting
+    import importlib
+    importlib.reload(config)
+
+    return {"ok": True, "message": "Lane configuration saved"}
+
+
+# ---------------------------------------------------------------------------
 # Serve React static build (production)
 # ---------------------------------------------------------------------------
+# When running from source: USAD-Model/../USAD-UI/dist
+# When running from PyInstaller exe: sys._MEIPASS/USAD-UI/dist
 _ui_dist = _THIS_DIR.parent / "USAD-UI" / "dist"
+if not _ui_dist.is_dir() and getattr(sys, 'frozen', False):
+    _ui_dist = Path(sys._MEIPASS) / "USAD-UI" / "dist"
 if _ui_dist.is_dir():
     app.mount("/", StaticFiles(directory=str(_ui_dist), html=True), name="frontend")
 

@@ -54,6 +54,40 @@ CAMERA_FPS = 30
 CAMERA_SOURCES = [1, 2]  # Available USB camera sources to cycle between (skips laptop webcam at 0)
 
 # Lanes (polygons in 1280x720 coordinates)
+# Default lane coordinates (never modified — used for "Reset to Default")
+DEFAULT_LANES = {
+    "LANE1": {
+        "name": "North",
+        "region": [(485, 0), (710, 0), (720, 190), (485, 190)],
+        "stop_line": [(480, 195), (720, 190)],
+        "direction": "vertical",
+        "arduino_cmd": "LANE1"
+    },
+    "LANE2": {
+        "name": "South",
+        "region": [(465, 720), (730, 720), (720, 420), (480, 420)],
+        "stop_line": [(480, 420), (720, 420)],
+        "direction": "vertical",
+        "arduino_cmd": "LANE2"
+    },
+    "LANE3": {
+        "name": "East",
+        "region": [(1020, 180), (1040, 410), (720, 415), (720, 190)],
+        "stop_line": [(720, 189), (720, 420)],
+        "direction": "horizontal",
+        "arduino_cmd": "LANE3"
+    },
+    "LANE4": {
+        "name": "West",
+        "region": [(165, 195), (145, 422), (480, 420), (480, 195)],
+        "stop_line": [(480, 195), (480, 420)],
+        "direction": "horizontal",
+        "arduino_cmd": "LANE4"
+    },
+}
+DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
+
+# Active lane coordinates (these get overwritten by the calibrator)
 LANES = {
     "LANE1": {  # North
         "name": "North",
@@ -63,7 +97,7 @@ LANES = {
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
-        "name": "South", 
+        "name": "South",
         "region": [(465, 720), (730, 720), (720, 420), (480, 420)],
         "stop_line": [(480, 420), (720, 420)],
         "direction": "vertical",
@@ -78,15 +112,39 @@ LANES = {
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(165, 195), (145 , 422), (480, 420), (480, 195)],
+        "region": [(165, 195), (145, 422), (480, 420), (480, 195)],
         "stop_line": [(480, 195), (480, 420)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
-    }
+    },
 }
 
 # Intersection center
 INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
+
+# ── Load lane calibration overrides (from exe runtime) ────────────────────────
+def _load_lane_overrides():
+    """When running as exe, load lane_config.json overrides saved by the calibrator."""
+    import json as _json
+    override_path = _os.path.join(_get_runtime_dir(), "lane_config.json")
+    if not _os.path.exists(override_path):
+        return
+    try:
+        with open(override_path, "r", encoding="utf-8") as f:
+            data = _json.load(f)
+        lanes_data = data.get("lanes", {})
+        for lk, d in lanes_data.items():
+            if lk in LANES:
+                LANES[lk]["region"] = [tuple(p) for p in d["region"]]
+                LANES[lk]["stop_line"] = [tuple(p) for p in d["stop_line"]]
+        inter = data.get("intersection_center")
+        if inter:
+            global INTERSECTION_CENTER
+            INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
+    except Exception:
+        pass
+
+_load_lane_overrides()
 
 # Timing (seconds)
 GREEN_TIME = 25   # seconds (match Arduino)
