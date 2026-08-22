@@ -123,7 +123,7 @@ def _build_telemetry() -> dict:
     # Detected plates
     plates = []
     for text, (bbox, conf, ts) in list(getattr(usad, "_detected_plates", {}).items()):
-        if (now - ts) < 3.0:
+        if (now - ts) < 4.0:
             plates.append({"text": text, "confidence": round(conf, 3)})
 
     violation_stats = usad.violation_detector.get_statistics()
@@ -344,6 +344,11 @@ async def logs_accidents():
 @app.get("/api/logs/traffic")
 async def logs_traffic():
     return _read_csv("traffic_events.csv")
+
+
+@app.get("/api/logs/plates")
+async def logs_plates():
+    return _read_csv("license_plates.csv")
 
 
 # ---------------------------------------------------------------------------

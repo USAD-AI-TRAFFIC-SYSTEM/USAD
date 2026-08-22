@@ -262,16 +262,30 @@ class USAD:
             self._lp_frame_index += 1
             # Retrieve async OCR result from the dummy vehicle ID 999
             res = self.license_plate_detector.get_result(999)
-            if res:
-                for cleaned, confidence, plate_bbox in res:
-                    self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
+            if res is not None:
+                if res:  # non-empty list
+                    print(f"[LPR] Detected plates: {[(t, f'{c:.0f}%') for t, c, _ in res]}", flush=True)
+                    for cleaned, confidence, plate_bbox in res:
+                        self._detected_plates[cleaned] = (plate_bbox, confidence, time.time())
+                        # Log to CSV
+                        self.event_logger.log_license_plate(
+                            vehicle_id=999,
+                            plate_text=cleaned,
+                            confidence=confidence,
+                            location=(plate_bbox[0], plate_bbox[1]),
+                        )
+                else:
+                    print("[LPR] OCR ran but found nothing", flush=True)
 
-            # Submit next frame asynchronously if queue is not full
-            self.license_plate_detector.submit_async(
-                999,
-                frame,
-                (0, 0, frame.shape[1], frame.shape[0])
-            )
+            # Submit every N frames
+            if self._lp_frame_index % max(1, config.LP_DETECT_EVERY_N_FRAMES) == 0:
+                submitted = self.license_plate_detector.submit_async(
+                    999,
+                    frame,
+                    (0, 0, frame.shape[1], frame.shape[0])
+                )
+                if submitted and self._lp_frame_index % 30 == 0:
+                    print(f"[LPR] Submitted frame {self._lp_frame_index} for OCR", flush=True)
         
         self.update_traffic_control(lane_counts_for_control, accidents)
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
@@ -476,7 +490,7 @@ class USAD:
                 now_ts = time.time()
                 to_delete = []
                 for plate_text, (plate_bbox, confidence, ts) in list(self._detected_plates.items()):
-                    if (now_ts - ts) > 2.0:
+                    if (now_ts - ts) > 4.0:
                         to_delete.append(plate_text)
                     else:
                         frame = self.license_plate_detector.draw_license_plate(frame, plate_text, plate_bbox, confidence)
