@@ -14,7 +14,7 @@ export async function controlAction(
 }
 
 export async function fetchLogs(
-  type: "violations" | "accidents" | "traffic"
+  type: "violations" | "accidents" | "traffic" | "plates"
 ): Promise<Record<string, string>[]> {
   const res = await fetch(`${API_BASE}/api/logs/${type}`);
   return res.json();

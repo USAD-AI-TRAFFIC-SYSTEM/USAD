@@ -72,8 +72,9 @@ function AnalyticsView() {
   const [violations, setViolations] = useState<Record<string, string>[]>([]);
   const [accidents, setAccidents] = useState<Record<string, string>[]>([]);
   const [traffic, setTraffic] = useState<Record<string, string>[]>([]);
+  const [plates, setPlates] = useState<Record<string, string>[]>([]);
   const [summary, setSummary] = useState<Record<string, unknown> | null>(null);
-  const [logTab, setLogTab] = useState<"violations" | "accidents" | "traffic">(
+  const [logTab, setLogTab] = useState<"violations" | "accidents" | "traffic" | "plates">(
     "violations"
   );
 
@@ -82,6 +83,7 @@ function AnalyticsView() {
       fetchLogs("violations").then(setViolations).catch(() => {});
       fetchLogs("accidents").then(setAccidents).catch(() => {});
       fetchLogs("traffic").then(setTraffic).catch(() => {});
+      fetchLogs("plates").then(setPlates).catch(() => {});
       fetchSummary().then(setSummary).catch(() => {});
     };
     load();
@@ -166,6 +168,7 @@ function AnalyticsView() {
                 { id: "violations", label: `Violations (${violations.length})` },
                 { id: "accidents", label: `Accidents (${accidents.length})` },
                 { id: "traffic", label: `Traffic Events (${traffic.length})` },
+                { id: "plates", label: `Nameplates (${plates.length})` },
               ] as const
             ).map((tab) => (
               <button
@@ -191,6 +194,9 @@ function AnalyticsView() {
         )}
         {logTab === "traffic" && (
           <LogTable title="Traffic Event Logs" records={traffic} />
+        )}
+        {logTab === "plates" && (
+          <LogTable title="License Plate Logs" records={plates} />
         )}
       </div>
     </div>
