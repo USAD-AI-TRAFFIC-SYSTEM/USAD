@@ -11,6 +11,7 @@ import VehicleTypeDistribution from "./components/Dashboard/VehicleTypeDistribut
 import AccidentDurationChart from "./components/Dashboard/AccidentDurationChart";
 import CategoryBreakdownChart from "./components/Dashboard/CategoryBreakdownChart";
 import LogTable from "./components/Dashboard/LogTable";
+import LaneCalibrator from "./components/Calibration/LaneCalibrator";
 import { useTelemetry } from "./hooks/useTelemetry";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
 import { fetchLogs, fetchSummary } from "./utils/api";
@@ -38,6 +39,8 @@ export default function App() {
       <main className="flex-1 overflow-hidden">
         {activeTab === "live" ? (
           <LiveFeedView telemetry={telemetry} />
+        ) : activeTab === "calibration" ? (
+          <LaneCalibrator />
         ) : (
           <AnalyticsView />
         )}

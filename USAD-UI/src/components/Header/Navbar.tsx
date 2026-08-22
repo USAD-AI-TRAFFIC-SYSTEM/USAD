@@ -1,4 +1,4 @@
-import { Camera, Cpu, Activity, Clock, Power, BarChart2 } from "lucide-react";
+import { Camera, Cpu, Activity, Clock, Power, BarChart2, Crosshair } from "lucide-react";
 import type { TelemetryData } from "../../types/telemetry";
 
 interface NavbarProps {
@@ -9,8 +9,9 @@ interface NavbarProps {
 }
 
 const TABS = [
-  { id: "live",      label: "Live Camera",  icon: Camera },
-  { id: "analytics", label: "Analytics",    icon: BarChart2 },
+  { id: "live",        label: "Live Camera",   icon: Camera },
+  { id: "analytics",   label: "Analytics",     icon: BarChart2 },
+  { id: "calibration", label: "Calibration",   icon: Crosshair },
 ];
 
 export default function Navbar({ telemetry, wsConnected, activeTab, onTabChange }: NavbarProps) {
