@@ -81,6 +81,39 @@ if errorlevel 1 (
 )
 echo.
 
+REM Build the React frontend (USAD-UI)
+echo Building React frontend...
+where npm >nul 2>&1
+if errorlevel 1 (
+    echo Error: npm is not installed or not in PATH
+    echo Please install Node.js from https://nodejs.org/
+    pause
+    exit /b 1
+)
+
+pushd USAD-UI
+if not exist "node_modules" (
+    echo Installing frontend dependencies...
+    call npm install
+    if errorlevel 1 (
+        echo Error: Failed to install frontend dependencies
+        popd
+        pause
+        exit /b 1
+    )
+)
+echo Compiling frontend...
+call npm run build
+if errorlevel 1 (
+    echo Error: Frontend build failed
+    popd
+    pause
+    exit /b 1
+)
+popd
+echo [OK] React frontend built (USAD-UI/dist)
+echo.
+
 echo Running build process...
 echo.
 

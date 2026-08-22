@@ -131,7 +131,7 @@ class USAD:
         self._lp_frame_index = 0
         
     def initialize_camera(self) -> bool:
-        """Initialize camera or video source"""
+        """Initialize camera or video source with auto-detection fallback."""
         print("\n[Camera] Initializing...")
 
         source = config.CAMERA_SOURCE
@@ -141,17 +141,31 @@ class USAD:
             ("ANY", cv2.CAP_ANY),
         ]
 
+        # Build list of sources to try: configured source first, then scan 0-4
+        sources_to_try = [source]
+        for idx in range(5):
+            if idx not in sources_to_try:
+                sources_to_try.append(idx)
+
         self.cap = None
-        for name, backend in backends:
-            cap = cv2.VideoCapture(source, backend)
-            if cap is not None and cap.isOpened():
-                self.cap = cap
-                print(f"[Camera] ✓ Opened source {source} using {name}")
+        opened_source = None
+        for src in sources_to_try:
+            for name, backend in backends:
+                cap = cv2.VideoCapture(src, backend)
+                if cap is not None and cap.isOpened():
+                    self.cap = cap
+                    opened_source = src
+                    if src != source:
+                        print(f"[Camera] Configured source {source} unavailable, fell back to source {src}")
+                        config.CAMERA_SOURCE = src
+                    print(f"[Camera] ✓ Opened source {src} using {name}")
+                    break
+            if self.cap is not None:
                 break
 
         if self.cap is None or not self.cap.isOpened():
-            print(f"[ERROR] Could not open camera source: {source}")
-            print("        Try closing other camera apps, or set CAMERA_SOURCE=1.")
+            print(f"[ERROR] Could not open any camera source (tried indices 0-4)")
+            print("        Try closing other camera apps or plugging in a camera.")
             return False
         
         self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
@@ -188,8 +202,8 @@ class USAD:
             return False
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single frame"""
-        is_camera_1 = (config.CAMERA_SOURCE == 1)
-        is_camera_2 = (config.CAMERA_SOURCE == 2)
+        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
+        is_camera_1 = not is_camera_2
 
         if is_camera_1:
             vehicles = self.vehicle_detector.detect_vehicles(frame)
@@ -216,8 +230,8 @@ class USAD:
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane(include_intersection=True)
         lane_counts_for_control = {k: int(lane_counts.get(k, 0)) for k in config.LANES.keys()}
 
-        is_camera_1 = (config.CAMERA_SOURCE == 1)
-        is_camera_2 = (config.CAMERA_SOURCE == 2)
+        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
+        is_camera_1 = not is_camera_2
 
         if is_camera_1:
             self.update_signal_cycle(lane_counts_for_control)
@@ -441,8 +455,8 @@ class USAD:
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
-        is_camera_1 = (config.CAMERA_SOURCE == 1)
-        is_camera_2 = (config.CAMERA_SOURCE == 2)
+        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
+        is_camera_1 = not is_camera_2
 
         if config.SHOW_LANE_REGIONS and is_camera_1:
             for lane_key, lane_data in config.LANES.items():

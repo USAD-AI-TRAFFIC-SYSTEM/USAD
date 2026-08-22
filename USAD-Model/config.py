@@ -23,8 +23,8 @@ _USAD_ROOT = _get_runtime_dir()
 
 
 # ── Arduino auto-detection ───────────────────────────────────────────────────
-def _detect_arduino_port(fallback="COM5"):
-    """Scan all COM ports and return the first one with an Arduino."""
+def _detect_arduino_port(fallback=None):
+    """Scan all COM ports and return the first one with an Arduino, or None if not found."""
     try:
         import serial.tools.list_ports
         ports = serial.tools.list_ports.comports()
@@ -36,9 +36,6 @@ def _detect_arduino_port(fallback="COM5"):
                 return port.device
             if any(kw in mfr for kw in ("arduino", "wch", "silicon labs", "ftdi")):
                 return port.device
-        # If no keyword match, return first available COM port
-        if ports:
-            return ports[0].device
     except Exception:
         pass
     return fallback
