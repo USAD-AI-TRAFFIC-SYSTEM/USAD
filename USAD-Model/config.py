@@ -91,8 +91,8 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(473, 2), (693, 2), (717, 189), (476, 227)],
-        "stop_line": [(476, 227), (717, 189)],
+        "region": [(473, 2), (693, 2), (718, 173), (476, 227)],
+        "stop_line": [(476, 227), (718, 173)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
@@ -105,8 +105,8 @@ LANES = {
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(1018, 153), (1080, 393), (744, 430), (717, 189)],
-        "stop_line": [(717, 189), (744, 430)],
+        "region": [(1067, 148), (1109, 393), (744, 430), (718, 173)],
+        "stop_line": [(718, 173), (744, 430)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
@@ -120,7 +120,7 @@ LANES = {
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(476, 227), (717, 189), (744, 430), (481, 454)]
+INTERSECTION_CENTER = [(476, 227), (718, 173), (744, 430), (481, 454)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -140,7 +140,7 @@ def _load_lane_overrides():
         inter = data.get("intersection_center")
         if inter:
             global INTERSECTION_CENTER
-            INTERSECTION_CENTER = [(476, 227), (717, 189), (744, 430), (481, 454)]
+            INTERSECTION_CENTER = [(476, 227), (718, 173), (744, 430), (481, 454)]
     except Exception:
         pass
 

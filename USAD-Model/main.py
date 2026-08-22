@@ -202,7 +202,7 @@ class USAD:
             return False
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single frame"""
-        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
+        is_camera_2 = (config.CAMERA_SOURCE == 2) or (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
         is_camera_1 = not is_camera_2
 
         if is_camera_1:
@@ -229,9 +229,6 @@ class USAD:
         
         lane_counts = self.vehicle_detector.get_vehicle_count_by_lane(include_intersection=True)
         lane_counts_for_control = {k: int(lane_counts.get(k, 0)) for k in config.LANES.keys()}
-
-        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
-        is_camera_1 = not is_camera_2
 
         if is_camera_1:
             self.update_signal_cycle(lane_counts_for_control)
@@ -274,18 +271,13 @@ class USAD:
                             confidence=confidence,
                             location=(plate_bbox[0], plate_bbox[1]),
                         )
-                else:
-                    print("[LPR] OCR ran but found nothing", flush=True)
 
-            # Submit every N frames
-            if self._lp_frame_index % max(1, config.LP_DETECT_EVERY_N_FRAMES) == 0:
-                submitted = self.license_plate_detector.submit_async(
-                    999,
-                    frame,
-                    (0, 0, frame.shape[1], frame.shape[0])
-                )
-                if submitted and self._lp_frame_index % 30 == 0:
-                    print(f"[LPR] Submitted frame {self._lp_frame_index} for OCR", flush=True)
+            # Submit every frame directly to zero-lag worker
+            self.license_plate_detector.submit_async(
+                999,
+                frame,
+                (0, 0, frame.shape[1], frame.shape[0])
+            )
         
         self.update_traffic_control(lane_counts_for_control, accidents)
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
@@ -456,7 +448,7 @@ class USAD:
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
-        is_camera_2 = (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
+        is_camera_2 = (config.CAMERA_SOURCE == 2) or (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
         is_camera_1 = not is_camera_2
 
         if config.SHOW_LANE_REGIONS and is_camera_1:

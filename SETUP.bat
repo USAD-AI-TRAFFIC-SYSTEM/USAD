@@ -44,40 +44,32 @@ call venv\Scripts\activate.bat
 echo [OK] Virtual environment activated
 echo.
 
-REM Install ALL dependencies (force reinstall to avoid missing packages)
-echo Installing all dependencies...
-pip install --upgrade pip >nul 2>&1
-pip install -r requirements.txt
+REM Check if all critical packages are already installed and working
+python -c "import customtkinter, cv2, easyocr, serial, fastapi, uvicorn, webview; print('[OK] All dependencies verified')" 2>nul
 if errorlevel 1 (
-    echo Error: Failed to install dependencies
-    pause
-    exit /b 1
-)
-
-echo.
-echo [OK] All dependencies installed
-echo.
-
-REM Ensure opencv-python (full, not headless) is installed last
-REM Both provide cv2 — must uninstall BOTH then reinstall the full version
-echo Fixing OpenCV (ensuring GUI version)...
-pip uninstall opencv-python opencv-python-headless -y >nul 2>&1
-pip install opencv-python >nul 2>&1
-
-REM Verify cv2 actually works before building
-python -c "import cv2; print('[OK] OpenCV version:', cv2.__version__)" 2>nul
-if errorlevel 1 (
-    echo Error: OpenCV failed to install properly
-    echo Trying forced reinstall...
-    pip install --force-reinstall opencv-python >nul 2>&1
-)
-
-REM Verify all critical packages
-python -c "import customtkinter; import cv2; import easyocr; import serial; print('[OK] All critical packages verified')"
-if errorlevel 1 (
-    echo Error: Some packages are still missing
-    pause
-    exit /b 1
+    echo Installing dependencies...
+    pip install -r requirements.txt
+    if errorlevel 1 (
+        echo.
+        echo ====================================================
+        echo [WARNING] Could not update packages because Python is
+        echo currently running and locking cv2.pyd or other files.
+        echo Please CLOSE any running USAD / Python app windows,
+        echo then run SETUP.bat again.
+        echo ====================================================
+        echo.
+        pause
+        exit /b 1
+    )
+    REM Verify critical packages
+    python -c "import customtkinter, cv2, easyocr, serial, fastapi, uvicorn, webview; print('[OK] All critical packages verified')"
+    if errorlevel 1 (
+        echo Error: Some packages are still missing
+        pause
+        exit /b 1
+    )
+) else (
+    echo [OK] All dependencies already installed and verified
 )
 echo.
 

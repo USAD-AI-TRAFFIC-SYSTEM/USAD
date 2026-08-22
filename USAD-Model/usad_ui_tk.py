@@ -384,13 +384,13 @@ class RealtimeDetectorEngine:
             pass
 
         with self._lock:
-            is_camera_2 = (self._camera_source == 2)
+            is_camera_2 = (self._camera_source == 2) or (config is not None and getattr(config, "CAMERA_SOURCES", None) and len(config.CAMERA_SOURCES) > 1 and self._camera_source == config.CAMERA_SOURCES[1])
         if is_camera_2 and config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
             try:
                 now_ts = time.time()
                 to_delete = []
                 for plate_text, (plate_bbox, confidence, ts) in list(self._detected_plates.items()):
-                    if (now_ts - ts) > 2.0:
+                    if (now_ts - ts) > 4.0:
                         to_delete.append(plate_text)
                     else:
                         if self._license_plate_detector is not None:
@@ -529,8 +529,8 @@ class RealtimeDetectorEngine:
 
             vehicles = []
             accidents = []
-            is_camera_1 = (self._camera_source == 1)
-            is_camera_2 = (self._camera_source == 2)
+            is_camera_2 = (self._camera_source == 2) or (config is not None and getattr(config, "CAMERA_SOURCES", None) and len(config.CAMERA_SOURCES) > 1 and self._camera_source == config.CAMERA_SOURCES[1])
+            is_camera_1 = not is_camera_2
 
             if is_camera_1:
                 try:
