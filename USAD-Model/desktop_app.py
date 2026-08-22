@@ -71,7 +71,7 @@ def main():
 
         print(f"[Desktop] Opening native window -> {URL}")
         window = webview.create_window(
-            "USAD - Urban Smart Adaptive Dispatcher",
+            "USAD (Urban Smart Adaptive Dispatcher)",
             URL,
             width=1440,
             height=900,
