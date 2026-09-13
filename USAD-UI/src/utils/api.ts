@@ -36,12 +36,14 @@ export async function controlAction(
 export async function fetchLogs(
   type: "violations" | "accidents" | "traffic" | "plates"
 ): Promise<Record<string, string>[]> {
-  const res = await fetch(`${API_BASE}/api/logs/${type}`);
+  const res = await fetch(`${API_BASE}/api/logs/${type}`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Unable to fetch ${type} logs (${res.status}).`);
   return res.json();
 }
 
 export async function fetchSummary() {
-  const res = await fetch(`${API_BASE}/api/logs/summary`);
+  const res = await fetch(`${API_BASE}/api/logs/summary`, { cache: "no-store" });
+  if (!res.ok) throw new Error(`Unable to fetch analytics summary (${res.status}).`);
   return res.json();
 }
 

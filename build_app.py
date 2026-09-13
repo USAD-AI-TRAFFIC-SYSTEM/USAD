@@ -6,7 +6,13 @@ Run this script to create the USAD.exe file.
 import PyInstaller.__main__
 import os
 import shutil
+import sys
 from pathlib import Path
+
+# Windows may default redirected console output to cp1252, while the build
+# status messages contain Unicode symbols. Do not let logging abort the build.
+if hasattr(sys.stdout, "reconfigure"):
+    sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
 # Paths
 project_root = Path(__file__).parent

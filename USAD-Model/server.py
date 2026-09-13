@@ -353,9 +353,11 @@ async def control_shutdown():
 # Log / analytics endpoints
 # ---------------------------------------------------------------------------
 def _read_csv(filename: str) -> list[dict]:
-    logs_dir = os.path.join(_THIS_DIR, "logs")
-    filepath = os.path.join(logs_dir, filename)
-    if not os.path.exists(filepath):
+    # Use the same frozen-aware persistent directory as EventLogger. In a
+    # one-file PyInstaller build, _THIS_DIR points inside the temporary
+    # extraction folder while EventLogger writes beside the EXE (dist/logs).
+    filepath = os.path.join(config.LOG_DIRECTORY, filename)
+    if not os.path.isfile(filepath):
         return []
     with open(filepath, newline="", encoding="utf-8") as f:
         return list(csv.DictReader(f))

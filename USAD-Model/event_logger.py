@@ -26,32 +26,42 @@ class EventLogger:
         self.last_analytics_update = time.time()
         
     def _initialize_log_files(self):
-        """Overwrite logs with headers at startup (clear previous runs)."""
-        with open(self.event_log_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
+        """Create missing log files without erasing records from earlier runs."""
+        def ensure_csv(path: str, fieldnames: List[str]):
+            if os.path.isfile(path) and os.path.getsize(path) > 0:
+                return
+            with open(path, 'w', newline='', encoding='utf-8') as f:
+                csv.writer(f).writerow(fieldnames)
+
+        ensure_csv(
+            self.event_log_path,
+            [
                 'timestamp', 'event_type', 'event_id', 'lane', 'vehicle_id',
                 'vehicle_type', 'license_plate', 'description', 'location'
-            ])
-        with open(self.violation_log_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
+            ],
+        )
+        ensure_csv(
+            self.violation_log_path,
+            [
                 'timestamp', 'date', 'time', 'hour', 'violation_type', 'violation_id',
                 'vehicle_id', 'vehicle_type', 'license_plate', 'lane', 'traffic_signal',
                 'speed', 'location_x', 'location_y'
-            ])
-        with open(self.accident_log_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
+            ],
+        )
+        ensure_csv(
+            self.accident_log_path,
+            [
                 'timestamp', 'date', 'time', 'hour', 'accident_type', 'accident_id',
                 'lane', 'vehicle_ids', 'vehicle_count', 'duration', 'emergency_notified',
                 'location_x', 'location_y'
-            ])
-        with open(self.plate_log_path, 'w', newline='') as f:
-            writer = csv.writer(f)
-            writer.writerow([
+            ],
+        )
+        ensure_csv(
+            self.plate_log_path,
+            [
                 'timestamp', 'vehicle_id', 'plate_text', 'confidence', 'location_x', 'location_y'
-            ])
+            ],
+        )
     
     def log_violation(self, violation: Violation):
         """Log a traffic violation"""
