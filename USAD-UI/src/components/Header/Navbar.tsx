@@ -33,7 +33,7 @@ export default function Navbar({ telemetry, wsConnected, activeTab, onTabChange 
           <div className="flex flex-col leading-none">
             <span className="text-base font-extrabold text-orange-500 tracking-tight">USAD</span>
             <span className="text-[9px] font-medium text-gray-400 tracking-wide whitespace-nowrap">
-              Smarter Signals. Safer Streets.
+              Urban Safety AI ADaptive
             </span>
           </div>
         </div>

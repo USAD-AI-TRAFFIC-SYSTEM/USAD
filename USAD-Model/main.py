@@ -76,7 +76,7 @@ class USAD:
     
     def __init__(self):
         print("="*70)
-        print("USAD - Urban Smart Adaptive Dispatcher")
+        print("USAD (Urban Safety AI ADaptive)")
         print("AI Traffic Management System")
         print("="*70)
         

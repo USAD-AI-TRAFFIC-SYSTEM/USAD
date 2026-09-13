@@ -131,36 +131,36 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(511, 2), (691, 0), (695, 206), (510, 203)],
-        "stop_line": [(510, 203), (695, 206)],
+        "region": [(538, 11), (726, 10), (716, 223), (523, 215)],
+        "stop_line": [(523, 215), (716, 223)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
         "name": "South",
-        "region": [(483, 668), (720, 655), (695, 372), (511, 391)],
-        "stop_line": [(511, 391), (695, 372)],
+        "region": [(471, 691), (711, 701), (717, 418), (501, 415)],
+        "stop_line": [(501, 415), (717, 418)],
         "direction": "vertical",
         "arduino_cmd": "LANE2"
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(944, 189), (965, 366), (695, 372), (695, 206)],
-        "stop_line": [(695, 206), (695, 372)],
+        "region": [(973, 211), (988, 422), (717, 418), (716, 223)],
+        "stop_line": [(716, 223), (717, 418)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(270, 203), (246, 400), (511, 391), (510, 203)],
-        "stop_line": [(510, 203), (511, 391)],
+        "region": [(273, 214), (245, 407), (501, 415), (523, 215)],
+        "stop_line": [(523, 215), (501, 415)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
     },
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(510, 203), (695, 206), (695, 372), (511, 391)]
+INTERSECTION_CENTER = [(523, 215), (716, 223), (717, 418), (501, 415)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -571,7 +571,7 @@ VEHICLE_TYPES = {    "SMALL": (300, 2500),      # Small objects, motorcycle, sma
 ALLOWED_VEHICLE_TYPES = ("SMALL", "MEDIUM", "LARGE")
 
 # Display
-DISPLAY_WINDOW_NAME = "USAD - AI Traffic Management System"
+DISPLAY_WINDOW_NAME = "USAD (Urban Safety AI ADaptive)"
 SHOW_DEBUG_INFO = True
 SHOW_VEHICLE_IDS = True
 SHOW_VEHICLE_BOX_SIZE = True

@@ -2,7 +2,7 @@
 
 This document explains what each main file in the USAD system does, what its most important functions are, and gives easy-to-understand examples.
 
-USAD stands for **Urban Smart Adaptive Detection**. It watches an intersection with a camera, looks for cars, spots red‑light violations and accident‑like situations, and can drive a small traffic‑light setup using an Arduino.
+USAD stands for **Urban Safety AI ADaptive**. It watches an intersection with a camera, looks for cars, spots red‑light violations and accident‑like situations, and can drive a small traffic‑light setup using an Arduino.
 
 ---
 

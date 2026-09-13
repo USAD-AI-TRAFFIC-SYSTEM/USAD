@@ -229,7 +229,7 @@ async def lifespan(app: FastAPI):
 # ---------------------------------------------------------------------------
 # FastAPI app
 # ---------------------------------------------------------------------------
-app = FastAPI(title="USAD Local Server", lifespan=lifespan)
+app = FastAPI(title="USAD (Urban Safety AI ADaptive) Local Server", lifespan=lifespan)
 
 app.add_middleware(
     CORSMiddleware,

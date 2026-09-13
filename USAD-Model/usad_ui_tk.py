@@ -1479,7 +1479,7 @@ class USADTkApp(ttk.Frame):
         super().__init__(master)
         self.master = master
 
-        master.title("USAD UI (Tkinter Draft)")
+        master.title("USAD (Urban Safety AI ADaptive)")
         master.geometry("1200x720")
 
         self._route = tk.StringVar(value="cameras")

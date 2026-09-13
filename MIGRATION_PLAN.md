@@ -2,7 +2,7 @@
 
 ## 1. Overview & Objectives
 
-This document details the complete, step-by-step implementation plan for modernizing the **USAD (Urban Smart Adaptive Dispatcher)** frontend.
+This document details the complete, step-by-step implementation plan for modernizing the **USAD (Urban Safety AI ADaptive)** frontend.
 
 ### Core Objectives:
 1. **100% Core Logic Preservation**: Absolutely zero changes to AI detection math, YOLO tracking, background subtraction, accident detection algorithms, red-light violation checks, EasyOCR license plate reader, Arduino PySerial communication, or CSV logging.
@@ -140,7 +140,7 @@ The local FastAPI server will run on `http://127.0.0.1:8000` (or dynamically sel
 ```
 App
 ├── NavigationHeader
-│   ├── Logo & Brand ("USAD · Urban Smart Adaptive Dispatcher")
+│   ├── Logo & Brand ("USAD · Urban Safety AI ADaptive")
 │   ├── Mode Tabs ("Live Camera Feed" | "Analytics & Logs" | "System Config")
 │   ├── Connection Badges (Camera Source 1/2, Arduino Connected/Simulation, FPS)
 │   └── System Clock & Shutdown Button

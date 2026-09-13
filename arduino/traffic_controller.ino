@@ -1,5 +1,5 @@
 /*
-  USAD - Urban Smart Adaptive Dispatcher
+  USAD (Urban Safety AI ADaptive)
   Traffic Signal Controller (Slave Mode)
  
   The Arduino acts as a SLAVE — it only changes lights when commanded

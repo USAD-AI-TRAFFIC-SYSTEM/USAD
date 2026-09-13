@@ -7,6 +7,7 @@ import PyInstaller.__main__
 import os
 import shutil
 import sys
+import tempfile
 from pathlib import Path
 
 # Windows may default redirected console output to cp1252, while the build
@@ -19,6 +20,30 @@ project_root = Path(__file__).parent
 usad_model = project_root / "USAD-Model"
 icon_file = project_root / "Logo 1.ico"
 dist_folder = project_root / "dist"
+runtime_entries = ("logs", "camera_config.json", "lane_config.json")
+
+
+def backup_runtime_data(backup_folder):
+    """Keep user-generated data safe while PyInstaller recreates dist/."""
+    for entry_name in runtime_entries:
+        source = dist_folder / entry_name
+        destination = backup_folder / entry_name
+        if source.is_dir():
+            shutil.copytree(source, destination)
+        elif source.is_file():
+            shutil.copy2(source, destination)
+
+
+def restore_runtime_data(backup_folder):
+    """Restore runtime data after a successful or failed rebuild."""
+    dist_folder.mkdir(parents=True, exist_ok=True)
+    for entry_name in runtime_entries:
+        source = backup_folder / entry_name
+        destination = dist_folder / entry_name
+        if source.is_dir():
+            shutil.copytree(source, destination, dirs_exist_ok=True)
+        elif source.is_file():
+            shutil.copy2(source, destination)
 
 print("=" * 60)
 print("USAD APP BUILDER")
@@ -95,6 +120,9 @@ pyinstaller_args = [arg for arg in pyinstaller_args if arg]
 print("\nBuilding executable...")
 print("-" * 60)
 
+runtime_backup = Path(tempfile.mkdtemp(prefix="usad-build-runtime-"))
+backup_runtime_data(runtime_backup)
+
 try:
     PyInstaller.__main__.run(pyinstaller_args)
     print("\n" + "=" * 60)
@@ -112,3 +140,6 @@ try:
 except Exception as e:
     print(f"\n❌ BUILD FAILED: {e}")
     exit(1)
+finally:
+    restore_runtime_data(runtime_backup)
+    shutil.rmtree(runtime_backup, ignore_errors=True)

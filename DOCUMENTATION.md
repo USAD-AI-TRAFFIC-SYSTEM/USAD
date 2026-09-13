@@ -7,7 +7,7 @@ This document explains the project and every file.
 
 ## 1. Project overview
 
-USAD stands for Urban Smart Adaptive Dispatcher. It is an AI-based traffic management system.
+USAD stands for Urban Safety AI ADaptive. It is an AI-based traffic management system.
 
 The system uses a camera to watch the intersection. It detects vehicles in each lane using background subtraction, color segmentation, and tracking. It keeps track of the traffic signal state (GREEN, YELLOW, or RED) for each lane. That state can be synced with a real Arduino board that controls physical traffic lights, or the program can simulate the lights on screen when no Arduino is connected.
 

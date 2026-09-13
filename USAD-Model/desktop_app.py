@@ -23,7 +23,7 @@ def main():
     URL = f"http://{HOST}:{PORT}"
 
     print("=" * 70)
-    print("USAD - Urban Smart Adaptive Dispatcher")
+    print("USAD (Urban Safety AI ADaptive)")
     print("Modern Desktop UI Launcher")
     print("=" * 70)
 
@@ -71,7 +71,7 @@ def main():
 
         print(f"[Desktop] Opening native window -> {URL}")
         window = webview.create_window(
-            "USAD (Urban Smart Adaptive Dispatcher)",
+            "USAD (Urban Safety AI ADaptive)",
             URL,
             width=1440,
             height=900,

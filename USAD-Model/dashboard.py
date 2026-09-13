@@ -68,7 +68,7 @@ class DashboardApp(ctk.CTk):
 
     def __init__(self):
         super().__init__()
-        self.title("Urban Smart Adaptive Detection (USAD)")
+        self.title("USAD (Urban Safety AI ADaptive)")
         self.configure(fg_color=C_WIN_BG)
         self.after(0, lambda: self.state("zoomed"))
 

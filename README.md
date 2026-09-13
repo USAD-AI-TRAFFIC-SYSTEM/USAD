@@ -1,4 +1,4 @@
-# USAD – Urban Smart Adaptive Detection
+# USAD (Urban Safety AI ADaptive)
 
 USAD is an AI‑assisted traffic management system that uses classical computer vision and adaptive control to improve safety and throughput at urban intersections.
 
@@ -170,7 +170,7 @@ cd USAD-Model
 python main.py
 ```
 
-If the camera and configuration are valid, a window titled “USAD - AI Traffic Management System” will open and start processing frames.
+If the camera and configuration are valid, a window titled “USAD (Urban Safety AI ADaptive)” will open and start processing frames.
 
 ### OCR smoke test (optional)
 
