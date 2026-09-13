@@ -22,3 +22,6 @@ logs/
 **/logs/*.csv
 **/logs/*.txt
 **/logs/*.log
+
+# Runtime camera/view assignments
+**/camera_config.json

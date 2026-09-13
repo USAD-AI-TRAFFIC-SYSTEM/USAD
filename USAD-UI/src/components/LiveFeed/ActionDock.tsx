@@ -1,5 +1,7 @@
-import { Zap, RotateCcw, Eraser, Camera, Maximize } from "lucide-react";
+import { useState } from "react";
+import { Zap, RotateCcw, Eraser, Camera, Maximize, Settings2 } from "lucide-react";
 import { controlAction } from "../../utils/api";
+import CameraSetup from "./CameraSetup";
 
 const ACTIONS = [
   { key: "A", label: "Auto",       icon: <Zap className="w-3.5 h-3.5" />,                       action: () => controlAction("auto"),           style: "bg-orange-100 text-orange-700 hover:bg-orange-200 ring-1 ring-orange-300" },
@@ -17,7 +19,10 @@ const ACTIONS = [
 ];
 
 export default function ActionDock() {
+  const [showCameraSetup, setShowCameraSetup] = useState(false);
+
   return (
+    <>
     <div className="absolute bottom-5 left-1/2 -translate-x-1/2 z-10">
       <p className="text-center text-[9px] font-bold text-white/60 uppercase tracking-widest mb-1.5 drop-shadow">
         Control Keys
@@ -35,7 +40,17 @@ export default function ActionDock() {
             <kbd className="text-[9px] opacity-40 font-mono">[{a.key}]</kbd>
           </button>
         ))}
+        <button
+          onClick={() => setShowCameraSetup(true)}
+          title="Assign cameras"
+          className="flex items-center gap-1.5 rounded-lg bg-indigo-50 px-2.5 py-1.5 text-xs font-semibold text-indigo-700 ring-1 ring-indigo-200 transition-all hover:bg-indigo-100 active:scale-95"
+        >
+          <Settings2 className="h-3.5 w-3.5" />
+          <span className="hidden sm:inline">Assign</span>
+        </button>
       </div>
     </div>
+    {showCameraSetup && <CameraSetup onClose={() => setShowCameraSetup(false)} />}
+    </>
   );
 }

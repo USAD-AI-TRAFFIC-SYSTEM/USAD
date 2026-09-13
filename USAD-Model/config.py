@@ -47,11 +47,51 @@ ARDUINO_BAUDRATE = 9600
 ARDUINO_TIMEOUT = 1
 
 # Camera
-CAMERA_SOURCE = 1
 CAMERA_WIDTH = 1280
 CAMERA_HEIGHT = 720
 CAMERA_FPS = 30
-CAMERA_SOURCES = [1, 2]  # Available USB camera sources to cycle between (skips laptop webcam at 0)
+CAMERA_ASSIGNMENTS = {
+    "vehicle_detection": 1,
+    "license_plate": 2,
+}
+CAMERA_CONFIG_PATH = _os.path.join(_get_runtime_dir(), "camera_config.json")
+
+
+def _load_camera_assignments():
+    """Load persistent camera-to-view assignments when available."""
+    if not _os.path.exists(CAMERA_CONFIG_PATH):
+        return
+    try:
+        import json as _json
+        with open(CAMERA_CONFIG_PATH, "r", encoding="utf-8") as f:
+            saved = _json.load(f)
+        for role in ("vehicle_detection", "license_plate"):
+            if role in saved:
+                CAMERA_ASSIGNMENTS[role] = int(saved[role])
+    except Exception:
+        pass
+
+
+_load_camera_assignments()
+CAMERA_SOURCE = CAMERA_ASSIGNMENTS["vehicle_detection"]
+CAMERA_SOURCES = list(dict.fromkeys(CAMERA_ASSIGNMENTS.values()))
+CAMERA_ROLES = {source: role for role, source in CAMERA_ASSIGNMENTS.items()}
+
+
+def get_camera_role(source=None):
+    """Return the configured role for a camera source."""
+    if source is None:
+        source = CAMERA_SOURCE
+    return CAMERA_ROLES.get(source, "vehicle_detection")
+
+
+def set_camera_assignments(vehicle_detection, license_plate):
+    """Update camera assignments in the live configuration."""
+    CAMERA_ASSIGNMENTS["vehicle_detection"] = int(vehicle_detection)
+    CAMERA_ASSIGNMENTS["license_plate"] = int(license_plate)
+    global CAMERA_SOURCES, CAMERA_ROLES
+    CAMERA_SOURCES = list(dict.fromkeys(CAMERA_ASSIGNMENTS.values()))
+    CAMERA_ROLES = {source: role for role, source in CAMERA_ASSIGNMENTS.items()}
 
 # Lanes (polygons in 1280x720 coordinates)
 # Default lane coordinates (never modified — used for "Reset to Default")
@@ -91,36 +131,36 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(473, 2), (693, 2), (718, 173), (476, 227)],
-        "stop_line": [(476, 227), (718, 173)],
+        "region": [(459, 3), (693, 2), (699, 231), (460, 228)],
+        "stop_line": [(460, 228), (699, 231)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
         "name": "South",
-        "region": [(481, 718), (774, 719), (744, 430), (481, 454)],
-        "stop_line": [(481, 454), (744, 430)],
+        "region": [(462, 720), (707, 720), (705, 462), (466, 466)],
+        "stop_line": [(466, 466), (705, 462)],
         "direction": "vertical",
         "arduino_cmd": "LANE2"
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(1067, 148), (1109, 393), (744, 430), (718, 173)],
-        "stop_line": [(718, 173), (744, 430)],
+        "region": [(1012, 227), (1017, 470), (705, 462), (699, 231)],
+        "stop_line": [(699, 231), (705, 462)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(164, 251), (139, 484), (481, 454), (476, 227)],
-        "stop_line": [(476, 227), (481, 454)],
+        "region": [(137, 225), (138, 464), (466, 466), (460, 228)],
+        "stop_line": [(460, 228), (466, 466)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
     },
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(476, 227), (718, 173), (744, 430), (481, 454)]
+INTERSECTION_CENTER = [(460, 228), (699, 231), (705, 462), (466, 466)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -140,7 +180,7 @@ def _load_lane_overrides():
         inter = data.get("intersection_center")
         if inter:
             global INTERSECTION_CENTER
-            INTERSECTION_CENTER = [(476, 227), (718, 173), (744, 430), (481, 454)]
+            INTERSECTION_CENTER = [(460, 228), (699, 231), (705, 462), (466, 466)]
     except Exception:
         pass
 
@@ -300,7 +340,7 @@ BLOB_SPLIT_BG_DILATE_ITERS = 2
 
 # Accident detection
 STOPPED_TIME_THRESHOLD = 999999.0
-STOPPED_DISTANCE_THRESHOLD = 999999
+STOPPED_DISTANCE_THRESHOLD = 3.0
 COLLISION_DISTANCE_THRESHOLD = 30
 
 # On-screen alert timing
@@ -338,6 +378,7 @@ QUEUE_MIN_SECONDS = 0.5
 # Collision alerts should clear immediately when resolved.
 COLLISION_ALERT_HOLD_SECONDS = 0.0
 COLLISION_CLEAR_SECONDS = 0.0
+COLLISION_MISSING_VEHICLE_GRACE_SECONDS = 0.0
 
 COLLISION_DUPLICATE_OVERLAP_MAX = 0.40  # lowered: catch same-car duplicate tracks earlier
 

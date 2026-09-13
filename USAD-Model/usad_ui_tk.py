@@ -384,7 +384,7 @@ class RealtimeDetectorEngine:
             pass
 
         with self._lock:
-            is_camera_2 = (self._camera_source == 2) or (config is not None and getattr(config, "CAMERA_SOURCES", None) and len(config.CAMERA_SOURCES) > 1 and self._camera_source == config.CAMERA_SOURCES[1])
+            is_camera_2 = config is not None and getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")(self._camera_source) == "license_plate"
         if is_camera_2 and config is not None and bool(getattr(config, "ENABLE_LICENSE_PLATE_DETECTION", False)):
             try:
                 now_ts = time.time()
@@ -529,7 +529,7 @@ class RealtimeDetectorEngine:
 
             vehicles = []
             accidents = []
-            is_camera_2 = (self._camera_source == 2) or (config is not None and getattr(config, "CAMERA_SOURCES", None) and len(config.CAMERA_SOURCES) > 1 and self._camera_source == config.CAMERA_SOURCES[1])
+            is_camera_2 = config is not None and getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")(self._camera_source) == "license_plate"
             is_camera_1 = not is_camera_2
 
             if is_camera_1:
@@ -1177,7 +1177,7 @@ class CameraTile(ttk.Frame):
         c = self._canvas
         c.delete("lane")
 
-        if config is not None and getattr(config, "CAMERA_SOURCE", None) != 1:
+        if config is not None and getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")() != "vehicle_detection":
             return
 
         polylines = lane_polylines_from_config()
@@ -1422,7 +1422,7 @@ class FullscreenViewer(tk.Toplevel):
         c = self._canvas
         c.delete("lane")
 
-        if config is not None and getattr(config, "CAMERA_SOURCE", None) != 1:
+        if config is not None and getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")() != "vehicle_detection":
             return
 
         polylines = lane_polylines_from_config()

@@ -36,7 +36,7 @@ _THIS_DIR = Path(__file__).resolve().parent
 if str(_THIS_DIR) not in sys.path:
     sys.path.insert(0, str(_THIS_DIR))
 
-from main import USAD  # noqa: E402
+from main import LatestFrameGrabber, USAD  # noqa: E402
 import config  # noqa: E402
 
 # ---------------------------------------------------------------------------
@@ -47,7 +47,8 @@ usad: Optional[USAD] = None
 # Latest processed frame (shared between grabber thread and streaming endpoint)
 _frame_lock = threading.Lock()
 _latest_jpeg: Optional[bytes] = None
-_frame_event = threading.Event()
+_latest_jpeg_sequence = 0
+_engine_lock = threading.RLock()
 
 # Shutdown flag
 _shutdown_event = asyncio.Event()
@@ -58,21 +59,43 @@ _shutdown_event = asyncio.Event()
 # ---------------------------------------------------------------------------
 def _frame_loop():
     """Continuously grab, process, and JPEG-encode frames."""
-    global _latest_jpeg
+    global _latest_jpeg, _latest_jpeg_sequence
     encode_params = [cv2.IMWRITE_JPEG_QUALITY, 85]
 
+    last_grabber = None
+    last_sequence = 0
+
     while not _shutdown_event.is_set():
-        if usad is None or usad.cap is None:
+        if usad is None:
             time.sleep(0.05)
             continue
 
-        ret, frame = usad.cap.read()
+        with _engine_lock:
+            if usad.cap is None:
+                grabber = None
+            else:
+                if usad._grabber is None:
+                    usad._grabber = LatestFrameGrabber(usad.cap)
+                    usad._grabber.start()
+                grabber = usad._grabber
+
+        if grabber is None:
+            time.sleep(0.05)
+            continue
+        if grabber is not last_grabber:
+            last_grabber = grabber
+            last_sequence = 0
+
+        ret, frame, _capture_ts, sequence = grabber.get_latest_after(last_sequence)
         if not ret or frame is None:
-            time.sleep(0.01)
+            time.sleep(0.002)
             continue
 
-        # Process through unchanged engine pipeline
-        processed = usad.process_frame(frame)
+        with _engine_lock:
+            if usad._grabber is not grabber:
+                continue
+            last_sequence = sequence
+            processed = usad.process_frame(frame)
 
         # FPS bookkeeping (mirrors app.py logic)
         usad.frame_count += 1
@@ -89,7 +112,7 @@ def _frame_loop():
         if ok:
             with _frame_lock:
                 _latest_jpeg = buf.tobytes()
-            _frame_event.set()
+                _latest_jpeg_sequence += 1
 
 
 # ---------------------------------------------------------------------------
@@ -131,6 +154,8 @@ def _build_telemetry() -> dict:
     return {
         "fps": round(usad.fps, 1),
         "camera_source": config.CAMERA_SOURCE,
+        "camera_role": config.get_camera_role(),
+        "camera_assignments": dict(config.CAMERA_ASSIGNMENTS),
         "arduino_connected": usad._is_arduino_connected(),
         "software_auto_mode": usad.software_auto_mode,
         "current_active_lane": usad.current_active_lane,
@@ -174,7 +199,7 @@ async def lifespan(app: FastAPI):
     grabber = threading.Thread(target=_frame_loop, daemon=True, name="FrameGrabber")
     grabber.start()
 
-    print("[server] ✓ USAD engine ready — serving on http://127.0.0.1:8000")
+    print("[server] [OK] USAD engine ready - serving on http://127.0.0.1:8000")
     yield
 
     # --- Shutdown ---
@@ -184,8 +209,12 @@ async def lifespan(app: FastAPI):
     except Exception:
         pass
     try:
-        if usad.cap:
-            usad.cap.release()
+        with _engine_lock:
+            if usad._grabber is not None:
+                usad._grabber.stop()
+                usad._grabber = None
+            if usad.cap:
+                usad.cap.release()
     except Exception:
         pass
     try:
@@ -193,7 +222,7 @@ async def lifespan(app: FastAPI):
             usad.traffic_controller.disconnect()
     except Exception:
         pass
-    print("[server] ✓ Shutdown complete")
+    print("[server] [OK] Shutdown complete")
 
 
 # ---------------------------------------------------------------------------
@@ -214,18 +243,20 @@ app.add_middleware(
 # ---------------------------------------------------------------------------
 async def _mjpeg_generator():
     """Yield MJPEG frames as multipart chunks."""
+    last_sequence = 0
     while not _shutdown_event.is_set():
-        _frame_event.wait(timeout=0.1)
-        _frame_event.clear()
         with _frame_lock:
             jpeg = _latest_jpeg
-        if jpeg is None:
+            sequence = _latest_jpeg_sequence
+        if jpeg is None or sequence == last_sequence:
+            await asyncio.sleep(0.008)
             continue
+        last_sequence = sequence
         yield (
             b"--frame\r\n"
             b"Content-Type: image/jpeg\r\n\r\n" + jpeg + b"\r\n"
         )
-        await asyncio.sleep(0.016)  # ~60 fps cap
+        await asyncio.sleep(0)
 
 
 @app.get("/api/video/feed")
@@ -244,7 +275,8 @@ async def telemetry_ws(ws: WebSocket):
     await ws.accept()
     try:
         while not _shutdown_event.is_set():
-            payload = _build_telemetry()
+            with _engine_lock:
+                payload = _build_telemetry()
             await ws.send_json(payload)
             await asyncio.sleep(0.033)  # ~30 Hz
     except WebSocketDisconnect:
@@ -277,26 +309,34 @@ async def control_lane(lane_key: str):
 
 @app.post("/api/control/reset")
 async def control_reset():
-    usad.vehicle_detector.reset()
-    usad.accident_detector.reset()
-    usad.violation_detector.reset()
-    usad.emergency_notifier.reset()
+    with _engine_lock:
+        usad.vehicle_detector.reset()
+        usad.accident_detector.reset()
+        usad.violation_detector.reset()
+        usad.emergency_notifier.reset()
     return {"ok": True, "action": "reset"}
 
 
 @app.post("/api/control/reset-bg")
 async def control_reset_bg():
-    try:
-        usad.vehicle_detector.reset_background()
-    except AttributeError:
-        usad.vehicle_detector.reset(reset_background=True, verbose=True)
+    with _engine_lock:
+        try:
+            usad.vehicle_detector.reset_background()
+        except AttributeError:
+            usad.vehicle_detector.reset(reset_background=True, verbose=True)
     return {"ok": True, "action": "reset_bg"}
 
 
 @app.post("/api/control/cycle-camera")
 async def control_cycle_camera():
-    usad.cycle_camera()
-    return {"ok": True, "action": "cycle_camera", "new_source": config.CAMERA_SOURCE}
+    def switch_camera():
+        with _engine_lock:
+            ok = usad.cycle_camera()
+            new_source = config.CAMERA_SOURCE
+            return ok, new_source
+
+    ok, new_source = await asyncio.to_thread(switch_camera)
+    return {"ok": ok, "action": "cycle_camera", "new_source": new_source}
 
 
 @app.post("/api/control/shutdown")
@@ -349,6 +389,135 @@ async def logs_traffic():
 @app.get("/api/logs/plates")
 async def logs_plates():
     return _read_csv("license_plates.csv")
+
+
+# ---------------------------------------------------------------------------
+# Camera discovery and assignment endpoints
+# ---------------------------------------------------------------------------
+def _camera_payload(devices: list[dict]) -> dict:
+    assignments = {k: int(v) for k, v in config.CAMERA_ASSIGNMENTS.items()}
+    by_source = {int(device["source"]): device for device in devices}
+
+    # Keep disconnected assignments visible so users can correct them.
+    for role, source in assignments.items():
+        device = by_source.get(source)
+        if device is None:
+            device = {
+                "source": source,
+                "label": f"Camera {source} (unavailable)",
+                "available": False,
+                "width": None,
+                "height": None,
+                "fps": None,
+            }
+            devices.append(device)
+            by_source[source] = device
+        device.setdefault("assigned_roles", []).append(role)
+
+    devices.sort(key=lambda item: int(item["source"]))
+    return {
+        "devices": devices,
+        "assignments": assignments,
+        "active_source": int(config.CAMERA_SOURCE),
+        "active_role": config.get_camera_role(),
+    }
+
+
+def _discover_cameras(max_index: int = 9) -> dict:
+    devices: list[dict] = []
+    active_source = int(config.CAMERA_SOURCE)
+
+    with _engine_lock:
+        if usad is not None and usad.cap is not None:
+            devices.append({
+                "source": active_source,
+                "label": f"Camera {active_source}",
+                "available": True,
+                "active": True,
+                "width": int(usad.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0),
+                "height": int(usad.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0),
+                "fps": round(float(usad.cap.get(cv2.CAP_PROP_FPS) or 0.0), 1),
+            })
+
+    for source in range(max(0, max_index) + 1):
+        if source == active_source:
+            continue
+        cap = None
+        try:
+            cap = cv2.VideoCapture(source, cv2.CAP_DSHOW)
+            if cap is None or not cap.isOpened():
+                continue
+            cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+            readable = False
+            for _ in range(3):
+                ok, frame = cap.read()
+                if ok and frame is not None:
+                    readable = True
+                    break
+            if not readable:
+                continue
+            devices.append({
+                "source": source,
+                "label": f"Camera {source}",
+                "available": True,
+                "active": False,
+                "width": int(cap.get(cv2.CAP_PROP_FRAME_WIDTH) or frame.shape[1]),
+                "height": int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or frame.shape[0]),
+                "fps": round(float(cap.get(cv2.CAP_PROP_FPS) or 0.0), 1),
+            })
+        except Exception:
+            continue
+        finally:
+            if cap is not None:
+                cap.release()
+
+    return _camera_payload(devices)
+
+
+@app.get("/api/config/cameras")
+async def get_camera_config(scan: bool = True):
+    if not scan:
+        return _camera_payload([])
+    return await asyncio.to_thread(_discover_cameras)
+
+
+@app.post("/api/config/cameras")
+async def save_camera_config(payload: dict):
+    try:
+        vehicle_source = int(payload["vehicle_detection"])
+        plate_source = int(payload["license_plate"])
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Both camera assignments must be integer device IDs."}, 400)
+
+    if vehicle_source < 0 or plate_source < 0:
+        return JSONResponse({"ok": False, "error": "Camera device IDs cannot be negative."}, 400)
+    if vehicle_source == plate_source:
+        return JSONResponse({"ok": False, "error": "Assign a different camera to each view."}, 400)
+
+    def apply_assignments():
+        with _engine_lock:
+            old_assignments = dict(config.CAMERA_ASSIGNMENTS)
+            old_role = config.get_camera_role()
+            config.set_camera_assignments(vehicle_source, plate_source)
+            target_source = int(config.CAMERA_ASSIGNMENTS[old_role])
+
+            if target_source != config.CAMERA_SOURCE and not usad.switch_camera(target_source):
+                config.set_camera_assignments(
+                    old_assignments["vehicle_detection"],
+                    old_assignments["license_plate"],
+                )
+                return False, "The camera assigned to the current view could not be opened."
+
+            config_path = Path(config.CAMERA_CONFIG_PATH)
+            temp_path = config_path.with_suffix(".tmp")
+            temp_path.write_text(json.dumps(config.CAMERA_ASSIGNMENTS, indent=2), encoding="utf-8")
+            os.replace(temp_path, config_path)
+            return True, None
+
+    ok, error = await asyncio.to_thread(apply_assignments)
+    if not ok:
+        return JSONResponse({"ok": False, "error": error}, 409)
+    return {"ok": True, **_camera_payload([])}
 
 
 # ---------------------------------------------------------------------------
@@ -524,7 +693,9 @@ async def save_lane_config(payload: dict):
 
     # Force immediate config reload so the live view updates without waiting
     import importlib
+    active_source = config.CAMERA_SOURCE
     importlib.reload(config)
+    config.CAMERA_SOURCE = active_source
 
     return {"ok": True, "message": "Lane configuration saved"}
 

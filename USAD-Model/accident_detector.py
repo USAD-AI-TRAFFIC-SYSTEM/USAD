@@ -157,7 +157,7 @@ class AccidentDetector:
             return legacy
 
         collision_clear_seconds = float(getattr(config, "COLLISION_CLEAR_SECONDS", 5.0))
-        missing_grace_seconds = float(getattr(config, "COLLISION_MISSING_VEHICLE_GRACE_SECONDS", 2.0) or 2.0)
+        missing_grace_seconds = float(getattr(config, "COLLISION_MISSING_VEHICLE_GRACE_SECONDS", 2.0))
         missing_grace_seconds = max(0.0, min(10.0, missing_grace_seconds))
         threshold_px = _collision_threshold_px()
         queue_proximity_px = float(getattr(config, "QUEUE_PROXIMITY_PX", 45.0))

@@ -29,6 +29,7 @@ class LatestFrameGrabber:
 
         self._latest: Optional[np.ndarray] = None
         self._latest_ts: float = 0.0
+        self._sequence: int = 0
 
     def start(self):
         if self._thread is not None:
@@ -54,12 +55,20 @@ class LatestFrameGrabber:
             with self._lock:
                 self._latest = frame
                 self._latest_ts = time.time()
+                self._sequence += 1
 
     def get_latest(self) -> Tuple[bool, Optional[np.ndarray], float]:
         with self._lock:
             if self._latest is None:
                 return False, None, 0.0
             return True, self._latest, float(self._latest_ts)
+
+    def get_latest_after(self, sequence: int):
+        """Return the newest frame only if it has not already been consumed."""
+        with self._lock:
+            if self._latest is None or self._sequence <= int(sequence):
+                return False, None, 0.0, int(self._sequence)
+            return True, self._latest, float(self._latest_ts), int(self._sequence)
 
 
 class USAD:
@@ -101,6 +110,7 @@ class USAD:
         # Video capture
         self.cap = None
         self._grabber: Optional[LatestFrameGrabber] = None
+        self._frame_size_warning_shown = False
         
         # Display settings
         self.is_fullscreen = False
@@ -153,12 +163,26 @@ class USAD:
             for name, backend in backends:
                 cap = cv2.VideoCapture(src, backend)
                 if cap is not None and cap.isOpened():
+                    cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
+                    cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
+                    cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
+                    cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
+                    readable = False
+                    for _ in range(10):
+                        ret, probe = cap.read()
+                        if ret and probe is not None:
+                            readable = True
+                            break
+                        time.sleep(0.05)
+                    if not readable:
+                        cap.release()
+                        continue
                     self.cap = cap
                     opened_source = src
                     if src != source:
                         print(f"[Camera] Configured source {source} unavailable, fell back to source {src}")
                         config.CAMERA_SOURCE = src
-                    print(f"[Camera] ✓ Opened source {src} using {name}")
+                    print(f"[Camera] [OK] Opened source {src} using {name}")
                     break
             if self.cap is not None:
                 break
@@ -168,22 +192,12 @@ class USAD:
             print("        Try closing other camera apps or plugging in a camera.")
             return False
         
-        self.cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
-        self.cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
-        self.cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
+        actual_w = int(self.cap.get(cv2.CAP_PROP_FRAME_WIDTH) or 0)
+        actual_h = int(self.cap.get(cv2.CAP_PROP_FRAME_HEIGHT) or 0)
+        actual_fps = float(self.cap.get(cv2.CAP_PROP_FPS) or 0.0)
+        print(f"[Camera] Actual mode: {actual_w}x{actual_h} @ {actual_fps:.1f}fps")
         
-        print("[Camera] Warming up...")
-        for i in range(10):
-            ret, _ = self.cap.read()
-            if not ret:
-                if i == 0:
-                    print(f"[ERROR] Camera cannot read frames. Make sure:")
-                    print(f"        - Camera is not in use by another application")
-                    print(f"        - Camera {config.CAMERA_SOURCE} is properly connected")
-                    return False
-                time.sleep(0.1)
-        
-        print(f"[Camera] ✓ Initialized ({config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT} @ {config.CAMERA_FPS}fps)")
+        print(f"[Camera] [OK] Initialized ({config.CAMERA_WIDTH}x{config.CAMERA_HEIGHT} @ {config.CAMERA_FPS}fps)")
         return True
     
     def initialize_arduino(self) -> bool:
@@ -191,19 +205,30 @@ class USAD:
         print("\n[Arduino] Connecting to COM4...")
         
         if self.traffic_controller.connect():
-            print(f"[Arduino] ✓ Connected on {config.ARDUINO_PORT}")
+            print(f"[Arduino] [OK] Connected on {config.ARDUINO_PORT}")
             if config.AUTO_MODE_DEFAULT:
                 self.traffic_controller.set_auto_mode()
-                print("[Arduino] ✓ Auto mode enabled")
+                print("[Arduino] [OK] Auto mode enabled")
             return True
         else:
-            print("[Arduino] ✗ Failed to connect")
+            print("[Arduino] [FAILED] Connection failed")
             print("[Arduino] System will run in simulation mode")
             return False
     def process_frame(self, frame: np.ndarray) -> np.ndarray:
         """Process a single frame"""
-        is_camera_2 = (config.CAMERA_SOURCE == 2) or (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
-        is_camera_1 = not is_camera_2
+        expected_size = (int(config.CAMERA_WIDTH), int(config.CAMERA_HEIGHT))
+        if (frame.shape[1], frame.shape[0]) != expected_size:
+            if not self._frame_size_warning_shown:
+                print(
+                    f"[Camera] Resizing actual {frame.shape[1]}x{frame.shape[0]} frames "
+                    f"to configured {expected_size[0]}x{expected_size[1]} for calibrated geometry"
+                )
+                self._frame_size_warning_shown = True
+            frame = cv2.resize(frame, expected_size, interpolation=cv2.INTER_LINEAR)
+
+        camera_role = getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")()
+        is_camera_1 = camera_role == "vehicle_detection"
+        is_camera_2 = camera_role == "license_plate"
 
         if is_camera_1:
             vehicles = self.vehicle_detector.detect_vehicles(frame)
@@ -448,8 +473,9 @@ class USAD:
     
     def draw_interface(self, frame: np.ndarray, vehicles, accidents, lane_counts) -> np.ndarray:
         """Draw complete UI on frame"""
-        is_camera_2 = (config.CAMERA_SOURCE == 2) or (len(config.CAMERA_SOURCES) > 1 and config.CAMERA_SOURCE == config.CAMERA_SOURCES[1])
-        is_camera_1 = not is_camera_2
+        camera_role = getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")()
+        is_camera_1 = camera_role == "vehicle_detection"
+        is_camera_2 = camera_role == "license_plate"
 
         if config.SHOW_LANE_REGIONS and is_camera_1:
             for lane_key, lane_data in config.LANES.items():
@@ -635,11 +661,11 @@ class USAD:
             self.accident_detector.reset()
             self.violation_detector.reset()
             self.emergency_notifier.reset()
-            print("[System] ✓ Reset complete")
+            print("[System] [OK] Reset complete")
         elif key == ord('b') or key == ord('B'):
             print("\n[System] Resetting background learning...")
             self.vehicle_detector.reset(reset_background=True, verbose=True)
-            print("[System] ✓ Background learning reset")
+            print("[System] [OK] Background learning reset")
         elif key == ord('a') or key == ord('A'):
             print("\n[Control] Switching to AUTO mode")
             if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
@@ -727,18 +753,20 @@ class USAD:
             current_mtime = os.path.getmtime(self.config_path)
             if current_mtime != self.config_last_modified:
                 print("\n[Config] Detected changes in config.py, reloading...")
+                active_source = config.CAMERA_SOURCE
                 importlib.reload(config)
+                config.CAMERA_SOURCE = active_source
                 self.config_last_modified = current_mtime
-                print("[Config] ✓ Configuration reloaded successfully")
+                print("[Config] [OK] Configuration reloaded successfully")
                 print("[Config] Lane regions and settings updated")
         except Exception as e:
             print(f"[Config] Error reloading config: {e}")
     
     def cycle_camera(self):
-        """Cycle to the next camera source configured in config.CAMERA_SOURCES"""
+        """Cycle between the cameras assigned to the two application views."""
         if not hasattr(config, "CAMERA_SOURCES") or not config.CAMERA_SOURCES:
             print("\n[Camera] No CAMERA_SOURCES list defined in config.py")
-            return
+            return False
 
         orig_source = config.CAMERA_SOURCE
         try:
@@ -748,9 +776,15 @@ class USAD:
         except ValueError:
             next_source = config.CAMERA_SOURCES[0]
 
+        return self.switch_camera(next_source)
+
+    def switch_camera(self, next_source) -> bool:
+        """Switch directly to a camera source, reverting on failure."""
+        orig_source = config.CAMERA_SOURCE
+
         if next_source == orig_source:
             print(f"\n[Camera] Only one camera source ({orig_source}) is available.")
-            return
+            return self.cap is not None
 
         print(f"\n[Camera] Switching from source {orig_source} to {next_source}...")
         
@@ -782,13 +816,21 @@ class USAD:
                     cap = cv2.VideoCapture(src, backend)
                     if cap is not None and cap.isOpened():
                         # Set properties
+                        cap.set(cv2.CAP_PROP_BUFFERSIZE, 1)
                         cap.set(cv2.CAP_PROP_FRAME_WIDTH, config.CAMERA_WIDTH)
                         cap.set(cv2.CAP_PROP_FRAME_HEIGHT, config.CAMERA_HEIGHT)
                         cap.set(cv2.CAP_PROP_FPS, config.CAMERA_FPS)
-                        # Warm up
-                        for _ in range(5):
-                            cap.read()
-                        print(f"[Camera] ✓ Opened source {src} using {name}")
+                        readable = False
+                        for _ in range(10):
+                            ok, probe = cap.read()
+                            if ok and probe is not None:
+                                readable = True
+                                break
+                            time.sleep(0.05)
+                        if not readable:
+                            cap.release()
+                            continue
+                        print(f"[Camera] [OK] Opened source {src} using {name}")
                         return cap
                 except Exception:
                     continue
@@ -798,14 +840,14 @@ class USAD:
         if new_cap is not None:
             self.cap = new_cap
             config.CAMERA_SOURCE = next_source
-            print(f"[Camera] ✓ Switched to source {next_source}")
+            print(f"[Camera] [OK] Switched to source {next_source}")
         else:
             print(f"[ERROR] Failed to open source {next_source}. Reverting to source {orig_source}...")
             reverted_cap = open_source(orig_source)
             if reverted_cap is not None:
                 self.cap = reverted_cap
                 config.CAMERA_SOURCE = orig_source
-                print(f"[Camera] ✓ Reverted to source {orig_source}")
+                print(f"[Camera] [OK] Reverted to source {orig_source}")
             else:
                 print(f"[CRITICAL] Could not re-open original source {orig_source} either!")
                 self.cap = None
@@ -818,6 +860,8 @@ class USAD:
             self.violation_detector.reset()
         except Exception:
             pass
+
+        return self.cap is not None and config.CAMERA_SOURCE == next_source
 
     def run(self):
         """Main application loop"""
@@ -848,6 +892,7 @@ class USAD:
                 self.activate_lane(list(config.LANES.keys())[0])
         
         try:
+            last_sequence = 0
             while True:
                 if self.cap is None:
                     # Create black display error frame
@@ -886,8 +931,9 @@ class USAD:
                     self._grabber = LatestFrameGrabber(self.cap)
                     self._grabber.start()
                     self._last_frame_received_ts = time.time()
+                    last_sequence = 0
 
-                ret, frame, ts = self._grabber.get_latest()
+                ret, frame, ts, sequence = self._grabber.get_latest_after(last_sequence)
                 if not ret or frame is None:
                     # If we haven't received any frame for more than 3 seconds, show error frame
                     if time.time() - self._last_frame_received_ts > 3.0:
@@ -923,6 +969,7 @@ class USAD:
                         time.sleep(0.005)
                     continue
 
+                last_sequence = sequence
                 self._last_frame_received_ts = time.time()
 
                 now_loop = time.time()
@@ -972,7 +1019,7 @@ class USAD:
             if arduino_connected:
                 self.traffic_controller.disconnect()
             
-            print("[System] ✓ Shutdown complete")
+            print("[System] [OK] Shutdown complete")
             print("\nThank you for using USAD!")
 
 

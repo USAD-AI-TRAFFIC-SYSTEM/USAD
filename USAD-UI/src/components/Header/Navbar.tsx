@@ -69,7 +69,7 @@ export default function Navbar({ telemetry, wsConnected, activeTab, onTabChange 
 
         {/* Camera */}
         <Pill color="teal" icon={<Camera className="w-3 h-3" />}>
-          Cam {t?.camera_source ?? "—"}
+          {t?.camera_role === "license_plate" ? "Plate" : "Bird's-eye"} · Cam {t?.camera_source ?? "—"}
         </Pill>
 
         {/* Arduino */}
