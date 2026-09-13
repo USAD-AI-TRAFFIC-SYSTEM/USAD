@@ -95,6 +95,9 @@ class USAD:
         self.lane_green_duration = config.GREEN_TIME
         self.current_phase = "GREEN"  # GREEN, YELLOW, RED
         self.phase_start_time = time.time()
+        # Congestion may change which lane receives the *next* green, but it
+        # must never preempt the green/yellow sequence already in progress.
+        self._pending_congested_lane: Optional[str] = None
 
         # Software control when Arduino is disconnected
         self.software_auto_mode = bool(config.AUTO_MODE_DEFAULT)
@@ -304,7 +307,8 @@ class USAD:
                 (0, 0, frame.shape[1], frame.shape[0])
             )
         
-        self.update_traffic_control(lane_counts_for_control, accidents)
+        if is_camera_1:
+            self.update_traffic_control(lane_counts_for_control, accidents)
         frame = self.draw_interface(frame, vehicles, accidents, lane_counts)
         
         return frame
@@ -379,13 +383,9 @@ class USAD:
             self._sync_arduino(self.current_active_lane, "GREEN")
             return
 
-        # Manual mode: stay on current lane, keep green
-        if not self.software_auto_mode:
-            if self.current_phase != "GREEN":
-                self.current_phase = "GREEN"
-                self._apply_signal_states(self.current_active_lane, "GREEN")
-                self._sync_arduino(self.current_active_lane, "GREEN")
-            return
+        # A manual lane selection is a one-cycle override, not an indefinite
+        # hold. It still completes GREEN and YELLOW before returning to auto.
+        manual_override = not self.software_auto_mode
 
         # Auto mode: cycle GREEN → YELLOW → next lane GREEN
         if self.current_phase == "GREEN":
@@ -400,12 +400,27 @@ class USAD:
         elif self.current_phase == "YELLOW":
             yellow_time = float(getattr(config, "YELLOW_TIME", 4))
             if now - self.phase_start_time >= yellow_time:
-                # Transition to next lane GREEN
-                next_lane = self._get_next_lane(self.current_active_lane)
+                # A queued congested lane is considered only at the normal
+                # YELLOW -> GREEN boundary. If it cleared before service,
+                # resume the standard lane order instead.
+                pending_lane = getattr(self, "_pending_congested_lane", None)
+                threshold = int(getattr(config, "CONGESTION_THRESHOLD", 2))
+                pending_is_congested = (
+                    pending_lane in config.LANES
+                    and int(lane_counts.get(pending_lane, 0)) >= threshold
+                )
+                if pending_is_congested:
+                    next_lane = pending_lane
+                    print(f"[AI] Assigning next green to congested {next_lane}", flush=True)
+                else:
+                    next_lane = self._get_next_lane(self.current_active_lane)
+                self._pending_congested_lane = None
                 self.current_active_lane = next_lane
                 self.current_phase = "GREEN"
                 self.phase_start_time = now
                 self.lane_green_duration = self._compute_green_duration(next_lane, lane_counts)
+                if manual_override:
+                    self.software_auto_mode = True
                 self._apply_signal_states(next_lane, "GREEN")
                 self._sync_arduino(next_lane, "GREEN")
 
@@ -417,8 +432,9 @@ class USAD:
                 print(f"[Arduino Sync] {lane_key} -> {phase}", flush=True)
     
     def update_traffic_control(self, lane_counts: dict, accidents: list):
-        """Update traffic light control based on AI logic"""
+        """Queue congestion priority without interrupting the active phase."""
         if not config.ENABLE_ADAPTIVE_TIMING:
+            self._pending_congested_lane = None
             return
         
         if config.ENABLE_ACCIDENT_PRIORITY and accidents:
@@ -426,40 +442,45 @@ class USAD:
                 if accident.confirmed and accident.lane and accident.lane in config.LANES:
                     if self.current_active_lane != accident.lane:
                         print(f"[AI] Accident detected in {accident.lane}, activating lane for clearance")
+                        self._pending_congested_lane = None
                         self.activate_lane(accident.lane)
                         self.lane_green_duration = config.ACCIDENT_PRIORITY_DURATION
                     return
-        
-        max_vehicles = 0
-        congested_lane = None
-        
-        for lane_key, count in lane_counts.items():
-            if count > max_vehicles:
-                max_vehicles = count
-                congested_lane = lane_key
-        
-        if max_vehicles >= config.CONGESTION_THRESHOLD:
-            if self.current_active_lane == congested_lane:
-                self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
-            elif self._is_arduino_connected():
-                print(f"[AI] Congestion detected in {congested_lane} ({max_vehicles} vehicles)")
-                self.software_auto_mode = False
-                self.activate_lane(congested_lane)
-                self.lane_green_duration = self._compute_green_duration(congested_lane, lane_counts)
-        else:
-            if not self.software_auto_mode:
-                print(f"[AI] Congestion cleared (max vehicles: {max_vehicles}), returning to AUTO mode")
-                if self._is_arduino_connected():
-                    self.traffic_controller.set_auto_mode()
-                    self.current_active_lane = self._lane_order()[0]
-                    self.current_phase = "GREEN"
-                    self.phase_start_time = time.time()
-                    self.lane_green_duration = float(getattr(config, "GREEN_TIME", 25))
-                    self._apply_signal_states(self.current_active_lane, "GREEN")
-                self.software_auto_mode = True
+
+        # Manual selection remains authoritative and must not accumulate a
+        # stale automatic target for when auto mode is later enabled.
+        if not self.software_auto_mode:
+            self._pending_congested_lane = None
+            return
+
+        threshold = int(getattr(config, "CONGESTION_THRESHOLD", 2))
+        candidates = [
+            (int(count), lane_key)
+            for lane_key, count in lane_counts.items()
+            if lane_key in config.LANES
+            and int(count) >= threshold
+        ]
+        # Compare counts only so ties retain configured lane-cycle order.
+        congested_lane = max(candidates, key=lambda item: item[0], default=(0, None))[1]
+        previous_lane = getattr(self, "_pending_congested_lane", None)
+        self._pending_congested_lane = congested_lane
+
+        if congested_lane is not None and congested_lane != previous_lane:
+            count = int(lane_counts.get(congested_lane, 0))
+            print(
+                f"[AI] Congestion detected in {congested_lane} ({count} vehicles); "
+                "queued after the active green and yellow",
+                flush=True,
+            )
+        elif congested_lane is None and previous_lane is not None:
+            print(
+                f"[AI] Congestion cleared in {previous_lane} before priority service; "
+                "resuming the standard cycle",
+                flush=True,
+            )
     
     def activate_lane(self, lane_key: str):
-        """Activate a specific lane"""
+        """Activate a lane with a fresh, finite green interval."""
         if lane_key not in config.LANES:
             return
         
@@ -467,6 +488,8 @@ class USAD:
         self.lane_green_start_time = time.time()
         self.current_phase = "GREEN"
         self.phase_start_time = time.time()
+        self.lane_green_duration = float(getattr(config, "GREEN_TIME", 10))
+        self._pending_congested_lane = None
         
         self._apply_signal_states(lane_key, "GREEN")
         self._sync_arduino(lane_key, "GREEN")

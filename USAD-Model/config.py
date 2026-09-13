@@ -131,36 +131,36 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(459, 3), (693, 2), (699, 231), (460, 228)],
-        "stop_line": [(460, 228), (699, 231)],
+        "region": [(511, 2), (691, 0), (695, 206), (510, 203)],
+        "stop_line": [(510, 203), (695, 206)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
         "name": "South",
-        "region": [(462, 720), (707, 720), (705, 462), (466, 466)],
-        "stop_line": [(466, 466), (705, 462)],
+        "region": [(483, 668), (720, 655), (695, 372), (511, 391)],
+        "stop_line": [(511, 391), (695, 372)],
         "direction": "vertical",
         "arduino_cmd": "LANE2"
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(1012, 227), (1017, 470), (705, 462), (699, 231)],
-        "stop_line": [(699, 231), (705, 462)],
+        "region": [(944, 189), (965, 366), (695, 372), (695, 206)],
+        "stop_line": [(695, 206), (695, 372)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(137, 225), (138, 464), (466, 466), (460, 228)],
-        "stop_line": [(460, 228), (466, 466)],
+        "region": [(270, 203), (246, 400), (511, 391), (510, 203)],
+        "stop_line": [(510, 203), (511, 391)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
     },
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(460, 228), (699, 231), (705, 462), (466, 466)]
+INTERSECTION_CENTER = [(510, 203), (695, 206), (695, 372), (511, 391)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -180,7 +180,7 @@ def _load_lane_overrides():
         inter = data.get("intersection_center")
         if inter:
             global INTERSECTION_CENTER
-            INTERSECTION_CENTER = [(460, 228), (699, 231), (705, 462), (466, 466)]
+            INTERSECTION_CENTER = [tuple(p) for p in inter]
     except Exception:
         pass
 
@@ -208,7 +208,7 @@ ADAPTIVE_GREEN_REDUCE_SECONDS = 5  # reduce seconds for non-congested lanes
 SIMULATE_SIGNALS_WHEN_NO_ARDUINO = True
 
 # Vehicle detection (toy cars)
-MIN_VEHICLE_AREA = 1000
+MIN_VEHICLE_AREA = 450
 MAX_VEHICLE_AREA = 20000
 BACKGROUND_HISTORY = 50
 BACKGROUND_THRESHOLD = 40
@@ -217,26 +217,31 @@ DETECT_SHADOWS = False
 ENABLE_COLOR_FILTERING = True
 
 USE_COLOR_SEGMENTATION = True
+FUSE_MOTION_WITH_COLOR = True
 
 REQUIRE_LANE_MEMBERSHIP_FOR_DETECTION = False
 REQUIRE_INTERSECTION_ROI_FOR_DETECTION = True
 INTERSECTION_ROI_DILATE_PX = 10
+DETECTION_ROI_MIN_BBOX_OVERLAP = 0.35
 
 # Car colors (HSV)
 CAR_COLOR_RANGES = [
     # Blue
-    ((85, 40, 30), (145, 255, 255)),
+    ((85, 75, 35), (145, 255, 255)),
 
     # Red (two ranges; hue wraps)
-    ((0, 45, 30), (18, 255, 255)),
-    ((162, 45, 30), (180, 255, 255)),
+    ((0, 75, 35), (18, 255, 255)),
+    ((162, 75, 35), (180, 255, 255)),
 
 ]
 
 # Minimum fraction of bbox pixels matching a car color.
-CAR_COLOR_MIN_RATIO = 0.02
+CAR_COLOR_MIN_RATIO = 0.12
 
-MOTION_NEW_TRACK_MIN_COLOR_RATIO = 0.01
+# Motion is supporting evidence only: its bbox must contain a meaningful amount
+# of configured red/blue pixels before it can update or create a vehicle track.
+MOTION_TRACK_MIN_COLOR_RATIO = 0.06
+MOTION_NEW_TRACK_MIN_COLOR_RATIO = 0.12
 
 MAX_TRACKING_DISTANCE = 80  # pixels
 MIN_TRACKING_IOU = 0.05
@@ -246,6 +251,11 @@ VEHICLE_LOST_FRAMES = 25  # fallback (~<1s at 30fps)
 # Remove tracks when they have not been observed for this many seconds.
 # This ensures boxes disappear quickly (<1s) regardless of actual FPS.
 TRACK_LOST_REMOVE_SECONDS = 0.85
+
+# Keep a confirmed box/count visible through brief webcam segmentation dropouts,
+# but only while color evidence remains inside its last observed box.
+TRACK_DISPLAY_HOLD_SECONDS = 0.30
+TRACK_DISPLAY_HOLD_MIN_PRESENCE_RATIO = 0.006
 
 # If intersection ROI gating is enabled, remove tracks after they remain outside for this long.
 ROI_OUTSIDE_REMOVE_SECONDS = 0.85
@@ -305,28 +315,48 @@ TRACK_PRESENCE_MIN_RATIO = 0.02
 
 LANE_MEMBERSHIP_TOLERANCE_PX = 35
 
-MIN_VEHICLE_BBOX_WIDTH = 18
-MIN_VEHICLE_BBOX_HEIGHT = 18
-MAX_VEHICLE_ASPECT_RATIO = 2.8
-MIN_VEHICLE_EXTENT = 0.42  # contour area / bbox area (filters thin/line-like blobs)
+MIN_VEHICLE_BBOX_WIDTH = 12
+MIN_VEHICLE_BBOX_HEIGHT = 12
+# Orientation-specific axis-aligned bounding-box constraints. ``W`` is the
+# horizontal pixel span drawn in the live overlay; ``L`` is its vertical span.
+# A detection is horizontal when W >= L, otherwise it is vertical.
+HORIZONTAL_CAR_MIN_W = 80
+HORIZONTAL_CAR_MAX_W = 140
+HORIZONTAL_CAR_MIN_L = 45
+HORIZONTAL_CAR_MAX_L = 60
+
+VERTICAL_CAR_MIN_W = 48
+VERTICAL_CAR_MAX_W = 80
+VERTICAL_CAR_MIN_L = 90
+VERTICAL_CAR_MAX_L = 120
+
+# Orientation-independent box constraints. Set a maximum to 0 to disable it.
+# These correspond to the L/W pixel values drawn beside every detected vehicle.
+MIN_VEHICLE_BOX_LENGTH = 0
+MAX_VEHICLE_BOX_LENGTH = 0
+MIN_VEHICLE_BOX_WIDTH = 0
+MAX_VEHICLE_BOX_WIDTH = 0
+MAX_VEHICLE_ASPECT_RATIO = 3.8
+MIN_VEHICLE_EXTENT = 0.25  # contour area / bbox area (filters thin/line-like blobs)
 MAX_VEHICLE_EXTENT = 0.95
 
-MIN_VEHICLE_SOLIDITY = 0.88
+MIN_VEHICLE_SOLIDITY = 0.65
 
 # - `FG_MASK_MIN_RATIO` rejects mostly-hollow motion blobs inside the bbox (motion detection).
 # - `NEW_TRACK_MIN_AREA_SCALE` makes it harder for tiny blobs to spawn NEW tracks.
 # - Small-blob strict settings apply tighter extent/solidity thresholds only to small areas.
 FG_MASK_MIN_RATIO = 0.12
-NEW_TRACK_MIN_AREA_SCALE = 1.10
+NEW_TRACK_MIN_AREA_SCALE = 1.0
 SMALL_BLOB_STRICT_AREA_SCALE = 1.60
 MIN_VEHICLE_CIRCULARITY = 0.04
 MIN_VEHICLE_EXTENT_SMALL = MIN_VEHICLE_EXTENT + 0.08
 MIN_VEHICLE_SOLIDITY_SMALL = min(0.99, MIN_VEHICLE_SOLIDITY + 0.04)
 
-# Color segmentation morphology.
-# Keep closing small (or disable with (1,1)) to avoid fusing two nearby cars into one blob.
+# Color segmentation morphology. A modest close reconnects grain-fragmented toy
+# car surfaces while remaining well below the normal gap between separate cars.
 COLOR_MASK_OPEN_KERNEL = (3, 3)
-COLOR_MASK_CLOSE_KERNEL = (1, 1)
+COLOR_MASK_CLOSE_KERNEL = (5, 5)
+COLOR_DENOISE_KERNEL = 5
 
 ENABLE_BLOB_SPLITTING = True
 BLOB_SPLIT_MAX_EROSIONS = 4
@@ -533,17 +563,18 @@ EVENT_TYPES = {
 }
 
 # Vehicle types (based on size)
-VEHICLE_TYPES = {    "SMALL": (200, 2500),      # Small objects, motorcycle, small car
+VEHICLE_TYPES = {    "SMALL": (300, 2500),      # Small objects, motorcycle, small car
     "MEDIUM": (2500, 6000),    # Sedan, SUV
     "LARGE": (6000, MAX_VEHICLE_AREA)     # Truck, bus
 }
 
-ALLOWED_VEHICLE_TYPES = ("LARGE",)
+ALLOWED_VEHICLE_TYPES = ("SMALL", "MEDIUM", "LARGE")
 
 # Display
 DISPLAY_WINDOW_NAME = "USAD - AI Traffic Management System"
 SHOW_DEBUG_INFO = True
 SHOW_VEHICLE_IDS = True
+SHOW_VEHICLE_BOX_SIZE = True
 SHOW_LANE_REGIONS = True
 SHOW_VIOLATIONS = True
 

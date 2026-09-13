@@ -57,7 +57,7 @@ class Vehicle:
         self.lost_frames = 0
 
         self.seen_frames = 1
-        self.confirmed = False
+        self.confirmed = int(getattr(config, "MIN_TRACK_CONFIRM_FRAMES", 3)) <= 1
         
         self.current_lane = None
         self.crossed_stop_line = False
@@ -699,6 +699,27 @@ class VehicleDetector:
         self._intersection_roi_shape: Optional[Tuple[int, int]] = None
 
     @staticmethod
+    def _is_track_displayable(vehicle: Vehicle, now_ts: Optional[float] = None) -> bool:
+        """Whether a confirmed track has sufficiently recent visual evidence."""
+        if not bool(getattr(vehicle, "confirmed", False)):
+            return False
+        if int(getattr(vehicle, "lost_frames", 0) or 0) == 0:
+            return True
+
+        hold_seconds = float(getattr(config, "TRACK_DISPLAY_HOLD_SECONDS", 0.0) or 0.0)
+        if hold_seconds <= 0:
+            return False
+        if now_ts is None:
+            now_ts = time.time()
+        last_seen = float(getattr(vehicle, "_last_observed_ts", 0.0) or 0.0)
+        if last_seen <= 0 or (float(now_ts) - last_seen) > hold_seconds:
+            return False
+
+        min_presence = float(getattr(config, "TRACK_DISPLAY_HOLD_MIN_PRESENCE_RATIO", 0.0) or 0.0)
+        presence = float(getattr(vehicle, "_last_presence_ratio", 0.0) or 0.0)
+        return presence >= min_presence
+
+    @staticmethod
     def _overlap_over_min_area(b1: Tuple[int, int, int, int], b2: Tuple[int, int, int, int]) -> float:
         """Overlap ratio normalized by the smaller bbox area.
 
@@ -886,6 +907,38 @@ class VehicleDetector:
                 return True
         return False
 
+    @staticmethod
+    def _bbox_mask_overlap_ratio(mask: np.ndarray, bbox: Tuple[int, int, int, int]) -> float:
+        """Return the fraction of a bbox covered by a binary ROI mask."""
+        if mask is None or mask.size == 0:
+            return 1.0
+        x, y, w, h = map(int, bbox)
+        if w <= 0 or h <= 0:
+            return 0.0
+        mask_h, mask_w = mask.shape[:2]
+        x0, y0 = max(0, x), max(0, y)
+        x1, y1 = min(mask_w, x + w), min(mask_h, y + h)
+        if x1 <= x0 or y1 <= y0:
+            return 0.0
+        overlap = float(cv2.countNonZero(mask[y0:y1, x0:x1]))
+        return overlap / float(max(1, w * h))
+
+    @classmethod
+    def _bbox_supported_by_roi(
+        cls,
+        mask: np.ndarray,
+        bbox: Tuple[int, int, int, int],
+        center: Tuple[int, int],
+    ) -> bool:
+        """Require the center or a substantial part of a detection in the road ROI."""
+        if mask is None or mask.size == 0:
+            return True
+        if cls._any_point_in_mask(mask, [center]):
+            return True
+        min_overlap = float(getattr(config, "DETECTION_ROI_MIN_BBOX_OVERLAP", 0.35) or 0.35)
+        min_overlap = max(0.05, min(0.95, min_overlap))
+        return cls._bbox_mask_overlap_ratio(mask, bbox) >= min_overlap
+
     def _split_contour_if_needed(self, mask: np.ndarray, contour: np.ndarray) -> List[np.ndarray]:
         """Try to split a merged blob into multiple contours.
 
@@ -1033,11 +1086,20 @@ class VehicleDetector:
                 getattr(v, "confirmed", False) and int(getattr(v, "lost_frames", 0)) > 0
                 for v in self.vehicles.values()
             )
-            want_motion = need_reacquire or (len(color_dets) == 0)
+            want_motion = (
+                bool(getattr(config, "FUSE_MOTION_WITH_COLOR", True))
+                or need_reacquire
+                or (len(color_dets) == 0)
+            )
 
             motion_dets: List[dict] = []
             if want_motion:
                 motion_dets = self._detect_by_motion(frame)
+                motion_color_min = float(getattr(config, "MOTION_TRACK_MIN_COLOR_RATIO", 0.0) or 0.0)
+                motion_dets = [
+                    d for d in motion_dets
+                    if float(d.get("color_ratio", 0.0) or 0.0) >= motion_color_min
+                ]
                 for d in motion_dets:
                     d["source"] = "motion"
                     d.setdefault("mask_ratio", 1.0)
@@ -1120,7 +1182,7 @@ class VehicleDetector:
                     continue
 
                 try:
-                    x, y, w, h = v.bbox
+                    x, y, w, h = getattr(v, "_last_observed_bbox", v.bbox)
                     x = int(round(float(x)))
                     y = int(round(float(y)))
                     w = int(round(float(w)))
@@ -1141,6 +1203,7 @@ class VehicleDetector:
                 roi = self._last_color_mask[y0:y1, x0:x1]
                 denom = float(max(1, (x1 - x0) * (y1 - y0)))
                 ratio = float(cv2.countNonZero(roi)) / denom
+                setattr(v, "_last_presence_ratio", ratio)
                 try:
                     presence_ratio_by_id[int(getattr(v, "id", 0) or 0)] = float(ratio)
                 except Exception:
@@ -1200,17 +1263,11 @@ class VehicleDetector:
                 continue
             # Intersection ROI enforcement (optional)
             if intersection_roi_mask is not None:
-                x, y, w, h = vehicle.bbox
-                pts = [
-                    vehicle.center,
-                    (x + 2, y + 2),
-                    (x + w - 2, y + 2),
-                    (x + 2, y + h - 2),
-                    (x + w - 2, y + h - 2),
-                    (x + w // 2, y + h - 2),
-                ]
-
-                inside = self._any_point_in_mask(intersection_roi_mask, pts)
+                inside = self._bbox_supported_by_roi(
+                    intersection_roi_mask,
+                    tuple(map(int, vehicle.bbox)),
+                    tuple(map(int, vehicle.center)),
+                )
                 if inside:
                     vehicle.roi_outside_frames = 0
                     if hasattr(vehicle, "_roi_outside_since_ts"):
@@ -1288,6 +1345,15 @@ class VehicleDetector:
                 visible.append(v)
                 continue
 
+            if self._is_track_displayable(v, now_ts):
+                try:
+                    v.center = tuple(int(x) for x in getattr(v, "_last_observed_center", v.center))
+                    v.bbox = tuple(int(x) for x in getattr(v, "_last_observed_bbox", v.bbox))
+                except Exception:
+                    pass
+                visible.append(v)
+                continue
+
             # Only consider hold during active collision stabilization.
             try:
                 collision_until = float(getattr(v, "_collision_stability_until", 0.0) or 0.0)
@@ -1333,6 +1399,46 @@ class VehicleDetector:
         min_w = int(getattr(config, "MIN_VEHICLE_BBOX_WIDTH", 18))
         min_h = int(getattr(config, "MIN_VEHICLE_BBOX_HEIGHT", 18))
         if w < min_w or h < min_h:
+            return False
+
+        if w >= h:
+            orientation_limits = (
+                int(getattr(config, "HORIZONTAL_CAR_MIN_W", 0) or 0),
+                int(getattr(config, "HORIZONTAL_CAR_MAX_W", 0) or 0),
+                int(getattr(config, "HORIZONTAL_CAR_MIN_L", 0) or 0),
+                int(getattr(config, "HORIZONTAL_CAR_MAX_L", 0) or 0),
+            )
+        else:
+            orientation_limits = (
+                int(getattr(config, "VERTICAL_CAR_MIN_W", 0) or 0),
+                int(getattr(config, "VERTICAL_CAR_MAX_W", 0) or 0),
+                int(getattr(config, "VERTICAL_CAR_MIN_L", 0) or 0),
+                int(getattr(config, "VERTICAL_CAR_MAX_L", 0) or 0),
+            )
+
+        axis_min_w, axis_max_w, axis_min_l, axis_max_l = orientation_limits
+        if axis_min_w > 0 and w < axis_min_w:
+            return False
+        if axis_max_w > 0 and w > axis_max_w:
+            return False
+        if axis_min_l > 0 and h < axis_min_l:
+            return False
+        if axis_max_l > 0 and h > axis_max_l:
+            return False
+
+        box_length = max(w, h)
+        box_width = min(w, h)
+        min_length = int(getattr(config, "MIN_VEHICLE_BOX_LENGTH", 0) or 0)
+        max_length = int(getattr(config, "MAX_VEHICLE_BOX_LENGTH", 0) or 0)
+        min_width = int(getattr(config, "MIN_VEHICLE_BOX_WIDTH", 0) or 0)
+        max_width = int(getattr(config, "MAX_VEHICLE_BOX_WIDTH", 0) or 0)
+        if min_length > 0 and box_length < min_length:
+            return False
+        if max_length > 0 and box_length > max_length:
+            return False
+        if min_width > 0 and box_width < min_width:
+            return False
+        if max_width > 0 and box_width > max_width:
             return False
 
         aspect = max(w, h) / float(min(w, h))
@@ -1437,7 +1543,15 @@ class VehicleDetector:
         if not ranges:
             return []
 
-        hsv = cv2.cvtColor(frame, cv2.COLOR_BGR2HSV)
+        denoise_k = int(getattr(config, "COLOR_DENOISE_KERNEL", 0) or 0)
+        if denoise_k > 1:
+            denoise_k = max(3, min(9, denoise_k))
+            if denoise_k % 2 == 0:
+                denoise_k += 1
+            color_frame = cv2.GaussianBlur(frame, (denoise_k, denoise_k), 0)
+        else:
+            color_frame = frame
+        hsv = cv2.cvtColor(color_frame, cv2.COLOR_BGR2HSV)
 
         combined_mask = None
         for (lower_hsv, upper_hsv) in ranges:
@@ -1475,7 +1589,8 @@ class VehicleDetector:
                 if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
                     continue
 
-                # Optionally filter to only the main (toy car) size category.
+                # Optional broad size-category guard; color and ROI are the
+                # primary semantic evidence that this is a vehicle.
                 if not self._is_allowed_vehicle_type(area):
                     continue
 
@@ -1500,7 +1615,9 @@ class VehicleDetector:
                     (x + w // 2, y + h - 2),  # bottom-center
                 ]
 
-                if intersection_roi_mask is not None and (not self._any_point_in_mask(intersection_roi_mask, pts)):
+                if intersection_roi_mask is not None and (
+                    not self._bbox_supported_by_roi(intersection_roi_mask, (x, y, w, h), center)
+                ):
                     continue
 
                 # Optionally require lane membership at detection-time (only on Camera 1)
@@ -1559,7 +1676,8 @@ class VehicleDetector:
                 if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
                     continue
 
-                # Optionally filter to only the main (toy car) size category.
+                # Optional broad size-category guard; motion alone is never
+                # sufficient to enter the tracker.
                 if not self._is_allowed_vehicle_type(area):
                     continue
 
@@ -1575,6 +1693,12 @@ class VehicleDetector:
                         if mask_ratio < fg_min_ratio:
                             continue
 
+                color_ratio = 0.0
+                if self._last_color_mask is not None and w > 0 and h > 0:
+                    color_roi = self._last_color_mask[y : y + h, x : x + w]
+                    if color_roi.size != 0:
+                        color_ratio = float(cv2.countNonZero(color_roi)) / float(w * h)
+
                 center = (x + w // 2, y + h // 2)
 
                 pts = [
@@ -1586,7 +1710,9 @@ class VehicleDetector:
                     (x + w // 2, y + h - 2),
                 ]
 
-                if roi_mask is not None and (not self._any_point_in_mask(roi_mask, pts)):
+                if roi_mask is not None and (
+                    not self._bbox_supported_by_roi(roi_mask, (x, y, w, h), center)
+                ):
                     continue
 
                 is_cam_1 = getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")() == "vehicle_detection"
@@ -1605,7 +1731,13 @@ class VehicleDetector:
                     if not is_in_lane:
                         continue
 
-                detections.append({"center": center, "bbox": (x, y, w, h), "area": area, "mask_ratio": mask_ratio})
+                detections.append({
+                    "center": center,
+                    "bbox": (x, y, w, h),
+                    "area": area,
+                    "mask_ratio": mask_ratio,
+                    "color_ratio": color_ratio,
+                })
 
         return detections
     
@@ -1775,6 +1907,11 @@ class VehicleDetector:
                 crowded=bool(det_crowded[det_idx]) if det_idx < len(det_crowded) else False,
                 overlapping=bool(det_overlapping[det_idx]) if det_idx < len(det_overlapping) else False,
             )
+            setattr(
+                self.vehicles[vehicle_id],
+                "_last_presence_ratio",
+                float(det.get("mask_ratio", det.get("color_ratio", 0.0)) or 0.0),
+            )
             matched_vehicle_ids.add(vehicle_id)
             used_det_idxs.add(det_idx)
 
@@ -1789,7 +1926,9 @@ class VehicleDetector:
             source = det.get("source")
 
             if self.use_color_segmentation and source == "motion":
-                continue
+                motion_color_min = float(getattr(config, "MOTION_NEW_TRACK_MIN_COLOR_RATIO", 0.0) or 0.0)
+                if float(det.get("color_ratio", 0.0) or 0.0) < motion_color_min:
+                    continue
 
             if new_track_min_area > 0 and float(det.get("area", 0.0)) < new_track_min_area:
                 continue
@@ -1798,6 +1937,11 @@ class VehicleDetector:
                 if min_ratio > 0 and float(det.get("mask_ratio", 1.0)) < min_ratio:
                     continue
             vehicle = Vehicle(det["center"], det["bbox"], det["area"])
+            setattr(
+                vehicle,
+                "_last_presence_ratio",
+                float(det.get("mask_ratio", det.get("color_ratio", 0.0)) or 0.0),
+            )
             self.vehicles[vehicle.id] = vehicle
     
     def get_vehicles_in_lane(self, lane_key: str) -> List[Vehicle]:
@@ -1832,10 +1976,7 @@ class VehicleDetector:
         vehicles_in_lane = []
         
         for vehicle in self.vehicles.values():
-            if not getattr(vehicle, "confirmed", False):
-                continue
-            # Only count vehicles observed in the current frame.
-            if int(getattr(vehicle, "lost_frames", 0) or 0) != 0:
+            if not self._is_track_displayable(vehicle):
                 continue
             x, y, w, h = vehicle.bbox
             pts = [
@@ -1865,10 +2006,7 @@ class VehicleDetector:
 
         vehicles_in_zone: List[Vehicle] = []
         for vehicle in self.vehicles.values():
-            if not getattr(vehicle, "confirmed", False):
-                continue
-            # Only count vehicles observed in the current frame.
-            if int(getattr(vehicle, "lost_frames", 0) or 0) != 0:
+            if not self._is_track_displayable(vehicle):
                 continue
 
             x, y, w, h = vehicle.bbox
@@ -1917,9 +2055,21 @@ class VehicleDetector:
                 label = f"ID:{vehicle.id} {vehicle.vehicle_type}"
                 if vehicle.license_plate:
                     label += f" {vehicle.license_plate}"
-                
+
                 cv2.putText(frame, label, (x, y - 10),
                            cv2.FONT_HERSHEY_SIMPLEX, 0.5, color, 2)
+
+            if bool(getattr(config, "SHOW_VEHICLE_BOX_SIZE", True)):
+                dimensions = f"BOX W:{w}px H:{h}px"
+                text_y = y + h + 16
+                if text_y >= frame.shape[0] - 4:
+                    text_y = max(14, y + h - 6)
+                # Dark outline keeps values readable on both the black road and
+                # bright/grainy webcam backgrounds.
+                cv2.putText(frame, dimensions, (x, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, (0, 0, 0), 3)
+                cv2.putText(frame, dimensions, (x, text_y),
+                            cv2.FONT_HERSHEY_SIMPLEX, 0.45, color, 1)
             
             if len(vehicle.positions) > 1:
                 points = np.array(vehicle.positions, dtype=np.int32)

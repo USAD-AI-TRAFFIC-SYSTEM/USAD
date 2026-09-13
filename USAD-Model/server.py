@@ -160,6 +160,7 @@ def _build_telemetry() -> dict:
         "software_auto_mode": usad.software_auto_mode,
         "current_active_lane": usad.current_active_lane,
         "current_phase": usad.current_phase,
+        "pending_congested_lane": getattr(usad, "_pending_congested_lane", None),
         "phase_time_remaining": round(remaining, 1),
         "total_vehicles": sum(lane_counts_int.values()),
         "lane_counts": lane_counts_int,
@@ -682,9 +683,20 @@ async def save_lane_config(payload: dict):
     if intersection_data:
         inter = [tuple(p) for p in intersection_data]
         inter_str = f"INTERSECTION_CENTER = {inter}"
-        # Only replace the standalone INTERSECTION_CENTER (not DEFAULT_INTERSECTION_CENTER)
-        inter_pattern = r"(?<!DEFAULT_)INTERSECTION_CENTER\s*=\s*\[.*?\]"
-        content = re.sub(inter_pattern, inter_str, content, flags=re.DOTALL)
+        # Restrict replacement to the active top-level assignment.  A broad
+        # regex previously also rewrote the JSON override loader inside its
+        # function, causing packaged calibration to stop loading dynamically.
+        section_start = content.find("# Intersection center")
+        section_end = content.find("# ── Load lane calibration overrides", section_start)
+        if section_start != -1 and section_end != -1:
+            section = content[section_start:section_end]
+            section = re.sub(
+                r"(?m)^INTERSECTION_CENTER\s*=\s*\[[^\r\n]*\]",
+                inter_str,
+                section,
+                count=1,
+            )
+            content = content[:section_start] + section + content[section_end:]
 
         # Update runtime config
         config.INTERSECTION_CENTER = inter
