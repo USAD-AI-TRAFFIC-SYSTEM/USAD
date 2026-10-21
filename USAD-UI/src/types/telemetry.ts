@@ -3,6 +3,7 @@ export interface TelemetryData {
   camera_source: number;
   camera_role: "vehicle_detection" | "license_plate";
   camera_assignments: Record<"vehicle_detection" | "license_plate", number>;
+  camera_fallback_from: number | null;
   arduino_connected: boolean;
   software_auto_mode: boolean;
   current_active_lane: string | null;

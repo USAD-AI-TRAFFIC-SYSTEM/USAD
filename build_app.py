@@ -98,6 +98,7 @@ pyinstaller_args = [
     "--hidden-import=serial.tools",
     "--hidden-import=serial.tools.list_ports",
     "--hidden-import=serial.tools.list_ports_windows",
+    "--hidden-import=openpyxl",
     
     # Collect all package data
     "--collect-all=fastapi",

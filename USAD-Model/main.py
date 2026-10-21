@@ -112,6 +112,7 @@ class USAD:
         
         # Video capture
         self.cap = None
+        self.camera_fallback_from: Optional[int] = None
         self._grabber: Optional[LatestFrameGrabber] = None
         self._frame_size_warning_shown = False
         
@@ -161,6 +162,7 @@ class USAD:
                 sources_to_try.append(idx)
 
         self.cap = None
+        self.camera_fallback_from = None
         opened_source = None
         for src in sources_to_try:
             for name, backend in backends:
@@ -184,6 +186,14 @@ class USAD:
                     opened_source = src
                     if src != source:
                         print(f"[Camera] Configured source {source} unavailable, fell back to source {src}")
+                        print("!" * 70)
+                        print(f"[Camera] WARNING: camera {source} (assigned to "
+                              f"{config.get_camera_role(source)}) was not found.")
+                        print(f"[Camera] Using camera {src} instead. This may be the laptop's "
+                              "built-in webcam, not the intersection camera.")
+                        print("[Camera] Check the USB cable, then reassign cameras in Camera Setup.")
+                        print("!" * 70)
+                        self.camera_fallback_from = source
                         config.CAMERA_SOURCE = src
                     print(f"[Camera] [OK] Opened source {src} using {name}")
                     break
@@ -205,8 +215,13 @@ class USAD:
     
     def initialize_arduino(self) -> bool:
         """Initialize Arduino connection"""
-        print("\n[Arduino] Connecting to COM4...")
-        
+        if not config.ARDUINO_PORT:
+            print("\n[Arduino] No Arduino detected on any COM port")
+            print("[Arduino] System will run in simulation mode")
+            return False
+
+        print(f"\n[Arduino] Connecting to {config.ARDUINO_PORT}...")
+
         if self.traffic_controller.connect():
             print(f"[Arduino] [OK] Connected on {config.ARDUINO_PORT}")
             if config.AUTO_MODE_DEFAULT:
@@ -329,9 +344,9 @@ class USAD:
         return order[(idx + 1) % len(order)]
 
     def _classify_lane_congestion(self, count: int) -> str:
-        if count >= getattr(config, "SIM_CONGESTED_CARS", 2):
+        if count >= int(getattr(config, "CONGESTION_THRESHOLD", 2)):
             return "CONGESTED"
-        if count == getattr(config, "SIM_NON_CONGESTED_CARS", 1):
+        if count >= 1:
             return "NON-CONGESTED"
         return "EMPTY"
 
@@ -391,6 +406,21 @@ class USAD:
         if self.current_phase == "GREEN":
             green_duration = float(self.lane_green_duration)
             if now - self.phase_start_time >= green_duration:
+                # A lane that is still congested when its green runs out keeps
+                # the green (up to MAX_GREEN_TIME) instead of cycling through
+                # yellow. Once congestion clears, the green simply finishes.
+                extension = 0 if manual_override else self._congestion_extension(
+                    self.current_active_lane, lane_counts, green_duration
+                )
+                if extension > 0:
+                    self.lane_green_duration = green_duration + extension
+                    print(
+                        f"[AI] {self.current_active_lane} still congested; "
+                        f"extending green by {extension}s",
+                        flush=True,
+                    )
+                    return
+
                 # Transition to YELLOW
                 self.current_phase = "YELLOW"
                 self.phase_start_time = now
@@ -407,6 +437,7 @@ class USAD:
                 threshold = int(getattr(config, "CONGESTION_THRESHOLD", 2))
                 pending_is_congested = (
                     pending_lane in config.LANES
+                    and pending_lane != self.current_active_lane
                     and int(lane_counts.get(pending_lane, 0)) >= threshold
                 )
                 if pending_is_congested:
@@ -423,6 +454,17 @@ class USAD:
                     self.software_auto_mode = True
                 self._apply_signal_states(next_lane, "GREEN")
                 self._sync_arduino(next_lane, "GREEN")
+
+    def _congestion_extension(self, lane_key: str, lane_counts: dict, green_duration: float) -> int:
+        """Seconds to extend an expiring green for a still-congested lane."""
+        if not getattr(config, "ENABLE_ADAPTIVE_TIMING", True):
+            return 0
+        threshold = int(getattr(config, "CONGESTION_THRESHOLD", 2))
+        if int(lane_counts.get(lane_key, 0)) < threshold:
+            return 0
+        extend = int(getattr(config, "ADAPTIVE_GREEN_EXTEND_SECONDS", 3))
+        max_green = int(getattr(config, "MAX_GREEN_TIME", 15))
+        return max(0, min(extend, int(max_green - green_duration)))
 
     def _sync_arduino(self, lane_key: str, phase: str):
         """Send signal command to Arduino if connected."""
@@ -453,11 +495,14 @@ class USAD:
             self._pending_congested_lane = None
             return
 
+        # The active lane's own congestion is handled by extending its green
+        # in update_signal_cycle, so only other lanes are queued here.
         threshold = int(getattr(config, "CONGESTION_THRESHOLD", 2))
         candidates = [
             (int(count), lane_key)
             for lane_key, count in lane_counts.items()
             if lane_key in config.LANES
+            and lane_key != self.current_active_lane
             and int(count) >= threshold
         ]
         # Compare counts only so ties retain configured lane-cycle order.
@@ -479,6 +524,17 @@ class USAD:
                 flush=True,
             )
     
+    def enable_auto_mode(self):
+        """Return signal control to the automatic cycle.
+
+        Python drives the signals whether or not the Arduino is connected
+        (the Arduino only follows commands), so the software flag is what
+        actually resumes automatic cycling.
+        """
+        self.software_auto_mode = True
+        if self._is_arduino_connected():
+            self.traffic_controller.set_auto_mode()
+
     def activate_lane(self, lane_key: str):
         """Activate a lane with a fresh, finite green interval."""
         if lane_key not in config.LANES:
@@ -691,10 +747,7 @@ class USAD:
             print("[System] [OK] Background learning reset")
         elif key == ord('a') or key == ord('A'):
             print("\n[Control] Switching to AUTO mode")
-            if self.traffic_controller.serial_port and self.traffic_controller.serial_port.is_open:
-                self.traffic_controller.set_auto_mode()
-            else:
-                self.software_auto_mode = True
+            self.enable_auto_mode()
         elif key == ord('1'):
             print("\n[Control] Activating LANE1")
             self.software_auto_mode = False
@@ -863,6 +916,7 @@ class USAD:
         if new_cap is not None:
             self.cap = new_cap
             config.CAMERA_SOURCE = next_source
+            self.camera_fallback_from = None
             print(f"[Camera] [OK] Switched to source {next_source}")
         else:
             print(f"[ERROR] Failed to open source {next_source}. Reverting to source {orig_source}...")

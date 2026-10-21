@@ -187,16 +187,16 @@ function AnalyticsView() {
         </div>
 
         {logTab === "violations" && (
-          <LogTable title="Violation Logs" records={violations} />
+          <LogTable title="Violation Logs" logType="violations" records={violations} />
         )}
         {logTab === "accidents" && (
-          <LogTable title="Accident Logs" records={accidents} />
+          <LogTable title="Accident Logs" logType="accidents" records={accidents} />
         )}
         {logTab === "traffic" && (
-          <LogTable title="Traffic Event Logs" records={traffic} />
+          <LogTable title="Traffic Event Logs" logType="traffic" records={traffic} />
         )}
         {logTab === "plates" && (
-          <LogTable title="License Plate Logs" records={plates} />
+          <LogTable title="License Plate Logs" logType="plates" records={plates} />
         )}
       </div>
     </div>

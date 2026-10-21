@@ -1,15 +1,17 @@
 import { useState, useMemo } from "react";
 import { Search, Download, ChevronLeft, ChevronRight } from "lucide-react";
+import { getLogExportUrl, type LogType } from "../../utils/api";
 
 interface LogTableProps {
   title: string;
+  logType: LogType;
   records: Record<string, string>[];
   columns?: string[];
 }
 
 const PAGE_SIZE = 15;
 
-export default function LogTable({ title, records, columns }: LogTableProps) {
+export default function LogTable({ title, logType, records, columns }: LogTableProps) {
   const [search, setSearch] = useState("");
   const [page, setPage] = useState(0);
 
@@ -28,13 +30,13 @@ export default function LogTable({ title, records, columns }: LogTableProps) {
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageData = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
+  // The server builds the .xlsx (honoring the current search) and sends it as
+  // an attachment, which works in both browsers and the desktop window.
   const handleExport = () => {
-    if (records.length === 0) return;
-    const csv = [cols.join(","), ...records.map((r) => cols.map((c) => `"${(r[c] || "").replace(/"/g, '""')}"`).join(","))].join("\n");
-    const url = URL.createObjectURL(new Blob([csv], { type: "text/csv" }));
-    const a = Object.assign(document.createElement("a"), { href: url, download: `${title.toLowerCase().replace(/\s+/g, "_")}.csv` });
+    const a = Object.assign(document.createElement("a"), { href: getLogExportUrl(logType, search) });
+    document.body.appendChild(a);
     a.click();
-    URL.revokeObjectURL(url);
+    a.remove();
   };
 
   return (
@@ -55,10 +57,12 @@ export default function LogTable({ title, records, columns }: LogTableProps) {
           </div>
           <button
             onClick={handleExport}
-            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-600 hover:bg-orange-100 font-semibold transition-colors"
+            disabled={filtered.length === 0}
+            title={filtered.length === 0 ? "No records to export" : "Download as Excel (.xlsx)"}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg bg-orange-50 border border-orange-200 text-xs text-orange-600 hover:bg-orange-100 font-semibold transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
           >
             <Download className="w-3 h-3" />
-            Export
+            Export Excel
           </button>
         </div>
       </div>

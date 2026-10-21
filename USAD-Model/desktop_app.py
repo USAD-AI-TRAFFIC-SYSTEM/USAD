@@ -69,6 +69,11 @@ def main():
                 ico_path = str(candidate)
                 break
 
+        # pywebview blocks downloads by default, which silently breaks the
+        # dashboard's Export button. Files are saved to the Downloads folder.
+        if hasattr(webview, "settings"):
+            webview.settings["ALLOW_DOWNLOADS"] = True
+
         print(f"[Desktop] Opening native window -> {URL}")
         window = webview.create_window(
             "USAD (Urban Safety AI ADaptive)",

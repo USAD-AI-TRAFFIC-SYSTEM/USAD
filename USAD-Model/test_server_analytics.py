@@ -1,6 +1,7 @@
 """Regression tests for analytics paths used by packaged builds."""
 
 import csv
+import io
 import tempfile
 import unittest
 from pathlib import Path
@@ -35,6 +36,38 @@ class ServerAnalyticsTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as runtime_dir:
             with mock.patch.object(config, "LOG_DIRECTORY", runtime_dir):
                 self.assertEqual(server._read_csv("accidents.csv"), [])
+
+    def test_log_export_builds_filtered_xlsx(self):
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            log_path = Path(runtime_dir) / "violations.csv"
+            with log_path.open("w", newline="", encoding="utf-8") as stream:
+                writer = csv.DictWriter(stream, fieldnames=["lane", "license_plate"])
+                writer.writeheader()
+                writer.writerow({"lane": "LANE3", "license_plate": "ABC123"})
+                writer.writerow({"lane": "LANE1", "license_plate": "=HYPERLINK(1)"})
+
+            with mock.patch.object(config, "LOG_DIRECTORY", runtime_dir):
+                full = server._build_log_workbook("violations.csv", "Violation Logs")
+                filtered = server._build_log_workbook("violations.csv", "Violation Logs", "lane3")
+
+        ws = load_workbook(io.BytesIO(full)).active
+        self.assertEqual([c.value for c in ws[1]], ["Lane", "License Plate"])
+        self.assertEqual(ws.max_row, 3)
+        self.assertEqual(ws["B3"].data_type, "s")
+
+        ws = load_workbook(io.BytesIO(filtered)).active
+        self.assertEqual(ws.max_row, 2)
+        self.assertEqual(ws["A2"].value, "LANE3")
+
+    def test_log_export_of_missing_log_is_an_empty_workbook(self):
+        from openpyxl import load_workbook
+
+        with tempfile.TemporaryDirectory() as runtime_dir:
+            with mock.patch.object(config, "LOG_DIRECTORY", runtime_dir):
+                data = server._build_log_workbook("accidents.csv", "Accident Logs")
+        self.assertEqual(load_workbook(io.BytesIO(data)).active.title, "Accident Logs")
 
     def test_event_logger_preserves_rows_across_restart(self):
         with tempfile.TemporaryDirectory() as runtime_dir:

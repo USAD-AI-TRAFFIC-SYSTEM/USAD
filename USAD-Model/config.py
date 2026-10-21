@@ -194,11 +194,10 @@ RED_TIME = 30
 # Adaptive timing
 MIN_GREEN_TIME = 10
 MAX_GREEN_TIME = 30
+# A lane with at least this many cars is CONGESTED; 1 car up to one below
+# this is NON-CONGESTED; 0 cars is EMPTY. Used by both the lane status
+# display and the signal logic.
 CONGESTION_THRESHOLD = 2
-
-# Simulation interpretation
-SIM_NON_CONGESTED_CARS = 1
-SIM_CONGESTED_CARS = 2
 
 # Signal adjustments
 ADAPTIVE_GREEN_EXTEND_SECONDS = 10  # extra seconds for congested lanes
@@ -317,18 +316,15 @@ LANE_MEMBERSHIP_TOLERANCE_PX = 35
 
 MIN_VEHICLE_BBOX_WIDTH = 12
 MIN_VEHICLE_BBOX_HEIGHT = 12
-# Orientation-specific axis-aligned bounding-box constraints. ``W`` is the
-# horizontal pixel span drawn in the live overlay; ``L`` is its vertical span.
-# A detection is horizontal when W >= L, otherwise it is vertical.
-HORIZONTAL_CAR_MIN_W = 80
-HORIZONTAL_CAR_MAX_W = 140
-HORIZONTAL_CAR_MIN_L = 45
-HORIZONTAL_CAR_MAX_L = 60
-
-VERTICAL_CAR_MIN_W = 48
-VERTICAL_CAR_MAX_W = 80
-VERTICAL_CAR_MIN_L = 90
-VERTICAL_CAR_MAX_L = 120
+# Car size in pixels, measured on the car's rotated outline so the check works
+# for horizontal, vertical, and turning (diagonal) cars alike. LENGTH is the
+# long side and WIDTH the short side of the car.
+CAR_LENGTH_RANGE_PX = (80, 140)
+CAR_WIDTH_RANGE_PX = (45, 80)
+# Widens both ranges by this fraction (0.25 -> 25% smaller/larger) so small
+# changes in camera height do not make cars disappear. If you move the camera
+# a lot higher or lower, read the BOX W/H overlay and update the ranges above.
+CAR_SIZE_TOLERANCE = 0.25
 
 # Orientation-independent box constraints. Set a maximum to 0 to disable it.
 # These correspond to the L/W pixel values drawn beside every detected vehicle.

@@ -696,7 +696,7 @@ class VehicleDetector:
         self.had_confirmed_updates_this_frame: bool = False
 
         self._intersection_roi_mask: Optional[np.ndarray] = None
-        self._intersection_roi_shape: Optional[Tuple[int, int]] = None
+        self._intersection_roi_shape: Optional[tuple] = None
 
     @staticmethod
     def _is_track_displayable(vehicle: Vehicle, now_ts: Optional[float] = None) -> bool:
@@ -863,7 +863,17 @@ class VehicleDetector:
             return None
 
         h, w = frame.shape[:2]
-        shape = (h, w)
+        # Key the cache on the lane geometry too, so a saved lane calibration
+        # takes effect immediately instead of after a restart.
+        try:
+            geometry = (
+                tuple(tuple(map(tuple, d["region"])) for d in getattr(config, "LANES", {}).values()),
+                tuple(map(tuple, getattr(config, "INTERSECTION_CENTER", []))),
+                int(getattr(config, "INTERSECTION_ROI_DILATE_PX", 0) or 0),
+            )
+        except Exception:
+            geometry = None
+        shape = (h, w, geometry)
         if self._intersection_roi_mask is not None and self._intersection_roi_shape == shape:
             return self._intersection_roi_mask
 
@@ -1401,30 +1411,28 @@ class VehicleDetector:
         if w < min_w or h < min_h:
             return False
 
-        if w >= h:
-            orientation_limits = (
-                int(getattr(config, "HORIZONTAL_CAR_MIN_W", 0) or 0),
-                int(getattr(config, "HORIZONTAL_CAR_MAX_W", 0) or 0),
-                int(getattr(config, "HORIZONTAL_CAR_MIN_L", 0) or 0),
-                int(getattr(config, "HORIZONTAL_CAR_MAX_L", 0) or 0),
-            )
-        else:
-            orientation_limits = (
-                int(getattr(config, "VERTICAL_CAR_MIN_W", 0) or 0),
-                int(getattr(config, "VERTICAL_CAR_MAX_W", 0) or 0),
-                int(getattr(config, "VERTICAL_CAR_MIN_L", 0) or 0),
-                int(getattr(config, "VERTICAL_CAR_MAX_L", 0) or 0),
-            )
+        # Measure the car on its rotated outline: a car crossing the
+        # intersection diagonally has a near-square axis-aligned box.
+        car_length, car_width = float(max(w, h)), float(min(w, h))
+        try:
+            rw, rh = cv2.minAreaRect(contour)[1]
+            if rw > 0 and rh > 0:
+                car_length, car_width = float(max(rw, rh)), float(min(rw, rh))
+        except Exception:
+            pass
 
-        axis_min_w, axis_max_w, axis_min_l, axis_max_l = orientation_limits
-        if axis_min_w > 0 and w < axis_min_w:
-            return False
-        if axis_max_w > 0 and w > axis_max_w:
-            return False
-        if axis_min_l > 0 and h < axis_min_l:
-            return False
-        if axis_max_l > 0 and h > axis_max_l:
-            return False
+        tol = max(0.0, float(getattr(config, "CAR_SIZE_TOLERANCE", 0.0) or 0.0))
+        for size, size_range in (
+            (car_length, getattr(config, "CAR_LENGTH_RANGE_PX", None)),
+            (car_width, getattr(config, "CAR_WIDTH_RANGE_PX", None)),
+        ):
+            if not size_range:
+                continue
+            lo, hi = float(size_range[0]), float(size_range[1])
+            if lo > 0 and size < lo * (1.0 - tol):
+                return False
+            if hi > 0 and size > hi * (1.0 + tol):
+                return False
 
         box_length = max(w, h)
         box_width = min(w, h)

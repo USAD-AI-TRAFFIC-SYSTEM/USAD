@@ -34,6 +34,10 @@ class TrafficController:
 
     def connect(self) -> bool:
         """Connect to Arduino."""
+        if not config.ARDUINO_PORT:
+            # serial.Serial(port=None) "succeeds" without opening anything.
+            logger.error("Failed to connect to Arduino: no COM port detected")
+            return False
         try:
             self.serial_port = serial.Serial(
                 port=config.ARDUINO_PORT,

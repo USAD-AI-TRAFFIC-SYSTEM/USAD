@@ -142,7 +142,7 @@ Most runtime behavior is controlled via `USAD-Model/config.py`:
 - **Traffic signal timing**
   - `GREEN_TIME`, `YELLOW_TIME`, `RED_TIME`
   - `MIN_GREEN_TIME`, `MAX_GREEN_TIME`
-  - `ENABLE_ADAPTIVE_TIMING`, `SIM_CONGESTED_CARS`, `SIM_NON_CONGESTED_CARS`
+  - `ENABLE_ADAPTIVE_TIMING`, `CONGESTION_THRESHOLD`, `ADAPTIVE_GREEN_EXTEND_SECONDS`
 - **Arduino / controller**
   - `ARDUINO_PORT`, `ARDUINO_BAUDRATE`, `SIMULATE_SIGNALS_WHEN_NO_ARDUINO`
   - `AUTO_MODE_DEFAULT` (start in automatic lane cycling)

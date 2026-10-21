@@ -45,6 +45,20 @@ export default function FloatingHUD({ telemetry }: FloatingHUDProps) {
         </div>
       </div>
 
+      {/* ── Camera Fallback Warning ─────────────────────────── */}
+      {t?.camera_fallback_from != null && (
+        <div className="glass-card px-4 py-3 border border-red-200 bg-red-50/90">
+          <div className="flex items-start gap-2">
+            <AlertTriangle className="w-4 h-4 text-red-500 flex-shrink-0 mt-0.5" />
+            <p className="text-xs text-red-700">
+              <span className="font-bold">Camera {t.camera_fallback_from} not found.</span>{" "}
+              Showing camera {t.camera_source} instead, which may be the wrong camera.
+              Check the USB cable, then reassign cameras in Camera Setup.
+            </p>
+          </div>
+        </div>
+      )}
+
       {/* ── Active Signal Card ──────────────────────────────── */}
       <div className="glass-card px-4 py-3">
         <div className="flex items-center justify-between mb-2">

@@ -8,10 +8,12 @@ Endpoints:
   WS   /ws/telemetry            30 Hz JSON telemetry
   POST /api/control/{action}    Engine commands
   GET  /api/logs/{log_type}     CSV log data
+  GET  /api/logs/export/{type}  Log download as .xlsx
 """
 
 import asyncio
 import csv
+import io
 import json
 import os
 import signal
@@ -26,7 +28,7 @@ import cv2
 import numpy as np
 from fastapi import FastAPI, WebSocket, WebSocketDisconnect
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import JSONResponse, StreamingResponse
+from fastapi.responses import JSONResponse, Response, StreamingResponse
 from fastapi.staticfiles import StaticFiles
 
 # ---------------------------------------------------------------------------
@@ -156,6 +158,7 @@ def _build_telemetry() -> dict:
         "camera_source": config.CAMERA_SOURCE,
         "camera_role": config.get_camera_role(),
         "camera_assignments": dict(config.CAMERA_ASSIGNMENTS),
+        "camera_fallback_from": getattr(usad, "camera_fallback_from", None),
         "arduino_connected": usad._is_arduino_connected(),
         "software_auto_mode": usad.software_auto_mode,
         "current_active_lane": usad.current_active_lane,
@@ -291,10 +294,13 @@ async def telemetry_ws(ws: WebSocket):
 # ---------------------------------------------------------------------------
 @app.post("/api/control/auto")
 async def control_auto():
-    if usad._is_arduino_connected():
-        usad.traffic_controller.set_auto_mode()
-    else:
-        usad.software_auto_mode = True
+    # Signal state is shared with the frame loop, so change it under the
+    # same lock that process_frame runs under.
+    def enable():
+        with _engine_lock:
+            usad.enable_auto_mode()
+
+    await asyncio.to_thread(enable)
     return {"ok": True, "action": "auto"}
 
 
@@ -303,8 +309,13 @@ async def control_lane(lane_key: str):
     lane_key = lane_key.upper()
     if lane_key not in config.LANES:
         return JSONResponse({"ok": False, "error": f"Unknown lane {lane_key}"}, 400)
-    usad.software_auto_mode = False
-    usad.activate_lane(lane_key)
+
+    def activate():
+        with _engine_lock:
+            usad.software_auto_mode = False
+            usad.activate_lane(lane_key)
+
+    await asyncio.to_thread(activate)
     return {"ok": True, "action": f"activate_{lane_key}"}
 
 
@@ -392,6 +403,79 @@ async def logs_traffic():
 @app.get("/api/logs/plates")
 async def logs_plates():
     return _read_csv("license_plates.csv")
+
+
+_LOG_EXPORTS = {
+    "violations": ("violations.csv", "Violation Logs"),
+    "accidents": ("accidents.csv", "Accident Logs"),
+    "traffic": ("traffic_events.csv", "Traffic Event Logs"),
+    "plates": ("license_plates.csv", "License Plate Logs"),
+}
+
+
+def _build_log_workbook(filename: str, sheet_title: str, query: str = "") -> bytes:
+    """Render a CSV log as an .xlsx workbook, keeping rows that match query."""
+    from openpyxl import Workbook
+    from openpyxl.styles import Font, PatternFill
+    from openpyxl.utils import get_column_letter
+
+    columns: list[str] = []
+    rows: list[dict] = []
+    filepath = os.path.join(config.LOG_DIRECTORY, filename)
+    if os.path.isfile(filepath):
+        with open(filepath, newline="", encoding="utf-8") as f:
+            reader = csv.DictReader(f)
+            columns = list(reader.fieldnames or [])
+            rows = list(reader)
+
+    q = query.strip().lower()
+    if q:
+        rows = [r for r in rows if any(q in str(v).lower() for v in r.values())]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title[:31]
+
+    header_font = Font(bold=True, color="FFFFFF")
+    header_fill = PatternFill("solid", fgColor="F97316")
+    for col_idx, name in enumerate(columns, start=1):
+        cell = ws.cell(row=1, column=col_idx, value=name.replace("_", " ").title())
+        cell.font = header_font
+        cell.fill = header_fill
+
+    for row_idx, record in enumerate(rows, start=2):
+        for col_idx, name in enumerate(columns, start=1):
+            value = record.get(name) or ""
+            cell = ws.cell(row=row_idx, column=col_idx, value=value)
+            # Keep text such as "=..." from being interpreted as a formula.
+            if value.startswith("="):
+                cell.data_type = "s"
+
+    for col_idx, name in enumerate(columns, start=1):
+        longest = max([len(name)] + [len(str(r.get(name) or "")) for r in rows])
+        ws.column_dimensions[get_column_letter(col_idx)].width = min(60, longest + 2)
+
+    if columns:
+        ws.freeze_panes = "A2"
+        ws.auto_filter.ref = ws.dimensions
+
+    buffer = io.BytesIO()
+    wb.save(buffer)
+    return buffer.getvalue()
+
+
+@app.get("/api/logs/export/{log_type}")
+async def logs_export(log_type: str, q: str = ""):
+    if log_type not in _LOG_EXPORTS:
+        return JSONResponse({"ok": False, "error": f"Unknown log type {log_type}"}, 404)
+    filename, sheet_title = _LOG_EXPORTS[log_type]
+    data = await asyncio.to_thread(_build_log_workbook, filename, sheet_title, q)
+    download_name = f"{log_type}_logs_{time.strftime('%Y-%m-%d_%H%M')}.xlsx"
+    return Response(
+        content=data,
+        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 # ---------------------------------------------------------------------------
@@ -515,6 +599,8 @@ async def save_camera_config(payload: dict):
             temp_path = config_path.with_suffix(".tmp")
             temp_path.write_text(json.dumps(config.CAMERA_ASSIGNMENTS, indent=2), encoding="utf-8")
             os.replace(temp_path, config_path)
+            # The active camera now matches an explicit assignment.
+            usad.camera_fallback_from = None
             return True, None
 
     ok, error = await asyncio.to_thread(apply_assignments)

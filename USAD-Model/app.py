@@ -517,10 +517,7 @@ class USADApp(ctk.CTk):
         msg = "[App] Auto mode enabled — system will manage signals automatically."
         print(msg)
         self._show_toast(msg)
-        if self.usad._is_arduino_connected():
-            self.usad.traffic_controller.set_auto_mode()
-        else:
-            self.usad.software_auto_mode = True
+        self.usad.enable_auto_mode()
 
     def _cmd_reset(self):
         msg = "[App] Reset triggered — clearing vehicle, accident, violation, and notifier state."

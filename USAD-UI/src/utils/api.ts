@@ -33,8 +33,15 @@ export async function controlAction(
   return res.json();
 }
 
+export type LogType = "violations" | "accidents" | "traffic" | "plates";
+
+export function getLogExportUrl(type: LogType, search = ""): string {
+  const q = search.trim();
+  return `${API_BASE}/api/logs/export/${type}${q ? `?q=${encodeURIComponent(q)}` : ""}`;
+}
+
 export async function fetchLogs(
-  type: "violations" | "accidents" | "traffic" | "plates"
+  type: LogType
 ): Promise<Record<string, string>[]> {
   const res = await fetch(`${API_BASE}/api/logs/${type}`, { cache: "no-store" });
   if (!res.ok) throw new Error(`Unable to fetch ${type} logs (${res.status}).`);
