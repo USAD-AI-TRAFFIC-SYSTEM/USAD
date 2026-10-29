@@ -214,12 +214,23 @@ RED_TIME = 30
 #    the green is cut when the lane has been empty for EMPTY_GAP_SECONDS in a
 #    row (counted from when the lane emptied; a car showing up resets it).
 EMPTY_LANE_CHECK_SECONDS = 5
+# ...then only this many more seconds of green remain (a car returning restores it).
+EMPTY_LANE_CUT_TO_SECONDS = 5
 EMPTY_GAP_CHECK_FROM_REMAINING = 10
 EMPTY_GAP_SECONDS = 3
-# Lane status display only: a lane with at least this many cars is shown as
-# CONGESTED, 1 car up to one below this as NON-CONGESTED, 0 cars as EMPTY.
-# Congestion does not change the signal order or green length.
+# A lane with at least this many cars is CONGESTED, 1 car up to one below this
+# is NON-CONGESTED, 0 cars is EMPTY.
 CONGESTION_THRESHOLD = 2
+
+# Congestion priority: while another lane is CONGESTED and the active lane is
+# not, the active green is cut (after CONGESTION_PREEMPT_MIN_GREEN seconds) and
+# the most congested lane goes next. With no congested lane the normal order
+# N -> S -> E -> W applies. Manual lane selections are never preempted.
+ENABLE_CONGESTION_PRIORITY = True
+CONGESTION_PREEMPT_MIN_GREEN = 3
+# A lane that got its green for being congested ends it once it has stayed
+# below CONGESTION_THRESHOLD for this many seconds (and after the minimum above).
+CONGESTION_CLEAR_SECONDS = 2
 
 # Fallback
 SIMULATE_SIGNALS_WHEN_NO_ARDUINO = True

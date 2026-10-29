@@ -14,7 +14,7 @@ It ingests a live video feed, detects and tracks vehicles, identifies dangerous 
 - **Emergency notifications** – Simulates SMS and phone-call style notifications to a configurable hotline (default `911`) for confirmed accidents, with cooldown control.
 - **E.Y.E. (Eyeing Your Encounter)** – Rule‑based violation detection for red‑light violations.
 - **License plate recognition (LPR)** – Uses EasyOCR in a dedicated worker thread so OCR never blocks the video loop, with template/Tesseract-based fallbacks and throttling to avoid frame drops.
-- **Adaptive traffic signal control** – Lanes go green in a fixed order; a lane with no cars during the first seconds of its green is cut short so the next lane can move sooner.
+- **Adaptive traffic signal control** – Lanes go green in order (N, S, E, W); a lane with no cars during the first seconds of its green is cut short. If another lane is congested (2+ cars), the current green is cut and the most congested lane goes next; that green ends once its congestion clears.
 - **Arduino integration with graceful fallback** – Controls a physical 4‑lane traffic light controller via serial on `config.ARDUINO_PORT` (default `COM5`); automatically switches to software‑simulated signals when Arduino is not available.
 - **Structured logging and analytics** – Logs all events, violations, accidents, and recognized license plates to CSV; supports summary analytics and simple text reports.
 

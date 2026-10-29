@@ -7,7 +7,7 @@ import sys
 import os
 import importlib
 import threading
-from typing import Optional, Tuple
+from typing import Dict, Optional, Tuple
 import config
 from traffic_controller import TrafficController
 from vehicle_detector import VehicleDetector
@@ -99,6 +99,8 @@ class USAD:
         # and since when the lane has been empty (None while a car is there).
         self._car_seen_this_green = False
         self._lane_empty_since: Optional[float] = None
+        # When each lane last started a green (used to break congestion ties).
+        self._lane_last_green: Dict[str, float] = {}
 
         # Software control when Arduino is disconnected
         self.software_auto_mode = bool(config.AUTO_MODE_DEFAULT)
@@ -335,14 +337,34 @@ class USAD:
     def _lane_order(self):
         return list(config.LANES.keys())
 
-    def _get_next_lane(self, lane_key: str) -> str:
+    def _get_next_lane(self, lane_key: str, lane_counts: Optional[dict] = None) -> str:
         order = self._lane_order()
         if not order:
             return lane_key
         if lane_key not in order:
             return order[0]
+        congested = self._congested_lanes(lane_counts, exclude=lane_key)
+        if congested:
+            # Most cars first; on a tie, the lane that has waited longest.
+            return max(
+                congested,
+                key=lambda lane: (
+                    int(lane_counts.get(lane, 0)),
+                    -float(self.__dict__.get("_lane_last_green", {}).get(lane, 0.0)),
+                ),
+            )
         idx = order.index(lane_key)
         return order[(idx + 1) % len(order)]
+
+    def _congested_lanes(self, lane_counts: Optional[dict], exclude: Optional[str] = None) -> list:
+        """Lanes at or above CONGESTION_THRESHOLD, when congestion priority is on."""
+        if not lane_counts or not getattr(config, "ENABLE_CONGESTION_PRIORITY", True):
+            return []
+        return [
+            lane for lane in self._lane_order()
+            if lane != exclude
+            and self._classify_lane_congestion(int(lane_counts.get(lane, 0))) == "CONGESTED"
+        ]
 
     def _classify_lane_congestion(self, count: int) -> str:
         if count >= int(getattr(config, "CONGESTION_THRESHOLD", 2)):
@@ -391,6 +413,11 @@ class USAD:
             if int(lane_counts.get(self.current_active_lane, 0)) > 0:
                 self._car_seen_this_green = True
                 self._lane_empty_since = None
+                if getattr(self, "_empty_trimmed", False):
+                    # A car came back during the short empty-lane green: restore it.
+                    self._empty_trimmed = False
+                    self.lane_green_duration = float(getattr(config, "GREEN_TIME", 10))
+                    remaining = float(self.lane_green_duration) - elapsed
             elif getattr(self, "_lane_empty_since", None) is None:
                 self._lane_empty_since = now
 
@@ -399,8 +426,22 @@ class USAD:
             if getattr(config, "ENABLE_ADAPTIVE_TIMING", True):
                 # 1) No car at all during the first EMPTY_LANE_CHECK_SECONDS.
                 check_seconds = float(getattr(config, "EMPTY_LANE_CHECK_SECONDS", 5))
-                if not getattr(self, "_car_seen_this_green", True) and elapsed >= check_seconds:
-                    cut_reason = f"no car for the first {check_seconds:g}s"
+                if (
+                    not getattr(self, "_car_seen_this_green", True)
+                    and elapsed >= check_seconds
+                    and not getattr(self, "_empty_trimmed", False)
+                ):
+                    # Keep the green, but only EMPTY_LANE_CUT_TO_SECONDS more.
+                    keep = float(getattr(config, "EMPTY_LANE_CUT_TO_SECONDS", 5))
+                    if remaining > keep:
+                        self.lane_green_duration = elapsed + keep
+                        remaining = keep
+                        print(
+                            f"[AI] {self.current_active_lane} no car for the first {check_seconds:g}s; "
+                            f"cutting its green to {keep:g}s more",
+                            flush=True,
+                        )
+                    self._empty_trimmed = True
                 # 2) Once the countdown is at EMPTY_GAP_CHECK_FROM_REMAINING or
                 # less, the lane emptied and stayed empty for EMPTY_GAP_SECONDS.
                 gap_from = float(getattr(config, "EMPTY_GAP_CHECK_FROM_REMAINING", 10))
@@ -408,11 +449,44 @@ class USAD:
                 empty_since = getattr(self, "_lane_empty_since", None)
                 if (
                     cut_reason is None
+                    and getattr(self, "_car_seen_this_green", False)
                     and remaining <= gap_from
                     and empty_since is not None
                     and now - empty_since >= gap_seconds
                 ):
                     cut_reason = f"empty for {gap_seconds:g}s"
+
+            # 3) Another lane is congested and this one is not: give way.
+            if (
+                cut_reason is None
+                and not manual_override
+                and elapsed >= float(getattr(config, "CONGESTION_PREEMPT_MIN_GREEN", 3))
+                and self._classify_lane_congestion(int(lane_counts.get(self.current_active_lane, 0))) != "CONGESTED"
+            ):
+                waiting = self._congested_lanes(lane_counts, exclude=self.current_active_lane)
+                if waiting:
+                    cut_reason = f"{', '.join(waiting)} congested"
+
+            # 4) This lane got its green for being congested and no longer is.
+            if (
+                cut_reason is None
+                and not manual_override
+                and getattr(config, "ENABLE_CONGESTION_PRIORITY", True)
+                and getattr(self, "_served_for_congestion", False)
+            ):
+                still_congested = (
+                    self._classify_lane_congestion(int(lane_counts.get(self.current_active_lane, 0)))
+                    == "CONGESTED"
+                )
+                if still_congested:
+                    self._congestion_clear_since = None
+                elif getattr(self, "_congestion_clear_since", None) is None:
+                    self._congestion_clear_since = now
+                elif (
+                    elapsed >= float(getattr(config, "CONGESTION_PREEMPT_MIN_GREEN", 3))
+                    and now - self._congestion_clear_since >= float(getattr(config, "CONGESTION_CLEAR_SECONDS", 2))
+                ):
+                    cut_reason = "congestion cleared"
 
             cut_early = cut_reason is not None
             if cut_early and remaining > 0:
@@ -434,16 +508,26 @@ class USAD:
             if now - self.phase_start_time >= yellow_time:
                 if manual_override:
                     self.software_auto_mode = True
-                self._begin_green(self._get_next_lane(self.current_active_lane), now)
+                self._begin_green(self._get_next_lane(self.current_active_lane, lane_counts), now, lane_counts)
 
-    def _begin_green(self, lane_key: str, now: float):
+    def _begin_green(self, lane_key: str, now: float, lane_counts: Optional[dict] = None):
         """Start a fresh green for a lane and restart its empty-lane watch."""
         self.current_active_lane = lane_key
         self.current_phase = "GREEN"
         self.phase_start_time = now
+        self.__dict__.setdefault("_lane_last_green", {})[lane_key] = now
         self.lane_green_duration = float(getattr(config, "GREEN_TIME", 10))
+        self._empty_trimmed = False
         self._car_seen_this_green = False
         self._lane_empty_since = None
+        # Remember whether this green was earned by congestion, so it can end
+        # once the congestion clears.
+        self._served_for_congestion = bool(
+            lane_counts
+            and getattr(config, "ENABLE_CONGESTION_PRIORITY", True)
+            and self._classify_lane_congestion(int(lane_counts.get(lane_key, 0))) == "CONGESTED"
+        )
+        self._congestion_clear_since = None
         self._apply_signal_states(lane_key, "GREEN")
         self._sync_arduino(lane_key, "GREEN")
 
@@ -457,8 +541,7 @@ class USAD:
     def update_traffic_control(self, lane_counts: dict, accidents: list):
         """Give an accident lane the green when accident priority is enabled.
 
-        Congestion never changes the signal order or green length; it is
-        shown on the dashboard only.
+        Congestion priority is handled in update_signal_cycle.
         """
         if not (config.ENABLE_ACCIDENT_PRIORITY and accidents):
             return
