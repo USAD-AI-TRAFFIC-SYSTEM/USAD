@@ -214,8 +214,6 @@ RED_TIME = 30
 #    the green is cut when the lane has been empty for EMPTY_GAP_SECONDS in a
 #    row (counted from when the lane emptied; a car showing up resets it).
 EMPTY_LANE_CHECK_SECONDS = 5
-# ...then only this many more seconds of green remain (a car returning restores it).
-EMPTY_LANE_CUT_TO_SECONDS = 5
 EMPTY_GAP_CHECK_FROM_REMAINING = 10
 EMPTY_GAP_SECONDS = 3
 # A lane with at least this many cars is CONGESTED, 1 car up to one below this

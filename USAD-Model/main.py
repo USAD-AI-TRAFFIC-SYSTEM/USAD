@@ -413,11 +413,6 @@ class USAD:
             if int(lane_counts.get(self.current_active_lane, 0)) > 0:
                 self._car_seen_this_green = True
                 self._lane_empty_since = None
-                if getattr(self, "_empty_trimmed", False):
-                    # A car came back during the short empty-lane green: restore it.
-                    self._empty_trimmed = False
-                    self.lane_green_duration = float(getattr(config, "GREEN_TIME", 10))
-                    remaining = float(self.lane_green_duration) - elapsed
             elif getattr(self, "_lane_empty_since", None) is None:
                 self._lane_empty_since = now
 
@@ -426,22 +421,8 @@ class USAD:
             if getattr(config, "ENABLE_ADAPTIVE_TIMING", True):
                 # 1) No car at all during the first EMPTY_LANE_CHECK_SECONDS.
                 check_seconds = float(getattr(config, "EMPTY_LANE_CHECK_SECONDS", 5))
-                if (
-                    not getattr(self, "_car_seen_this_green", True)
-                    and elapsed >= check_seconds
-                    and not getattr(self, "_empty_trimmed", False)
-                ):
-                    # Keep the green, but only EMPTY_LANE_CUT_TO_SECONDS more.
-                    keep = float(getattr(config, "EMPTY_LANE_CUT_TO_SECONDS", 5))
-                    if remaining > keep:
-                        self.lane_green_duration = elapsed + keep
-                        remaining = keep
-                        print(
-                            f"[AI] {self.current_active_lane} no car for the first {check_seconds:g}s; "
-                            f"cutting its green to {keep:g}s more",
-                            flush=True,
-                        )
-                    self._empty_trimmed = True
+                if not getattr(self, "_car_seen_this_green", True) and elapsed >= check_seconds:
+                    cut_reason = f"no car for the first {check_seconds:g}s"
                 # 2) Once the countdown is at EMPTY_GAP_CHECK_FROM_REMAINING or
                 # less, the lane emptied and stayed empty for EMPTY_GAP_SECONDS.
                 gap_from = float(getattr(config, "EMPTY_GAP_CHECK_FROM_REMAINING", 10))
@@ -449,7 +430,6 @@ class USAD:
                 empty_since = getattr(self, "_lane_empty_since", None)
                 if (
                     cut_reason is None
-                    and getattr(self, "_car_seen_this_green", False)
                     and remaining <= gap_from
                     and empty_since is not None
                     and now - empty_since >= gap_seconds
@@ -517,7 +497,6 @@ class USAD:
         self.phase_start_time = now
         self.__dict__.setdefault("_lane_last_green", {})[lane_key] = now
         self.lane_green_duration = float(getattr(config, "GREEN_TIME", 10))
-        self._empty_trimmed = False
         self._car_seen_this_green = False
         self._lane_empty_since = None
         # Remember whether this green was earned by congestion, so it can end

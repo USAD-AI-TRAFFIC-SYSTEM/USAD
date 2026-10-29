@@ -326,18 +326,13 @@ class CameraWorkflowTests(unittest.TestCase):
         self._run_signal(usad, 104.9, empty)
         self.assertEqual(usad.current_phase, "GREEN")
 
-        # Empty for the whole 5 s check window: the green is cut to 5 s more.
+        # 15 ... 10 and still no car: cut, without counting down to 0.
         self._run_signal(usad, 105.0, empty)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 10.0)
-        self._run_signal(usad, 109.9, empty)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self._run_signal(usad, 110.0, empty)
         self.assertEqual(usad.current_active_lane, "LANE1")
         self.assertEqual(usad.current_phase, "YELLOW")
 
         # Yellow is kept, then the normal order continues.
-        self._run_signal(usad, 114.0, empty)
+        self._run_signal(usad, 109.0, empty)
         self.assertEqual(usad.current_active_lane, "LANE2")
         self.assertEqual(usad.current_phase, "GREEN")
         self.assertEqual(usad.lane_green_duration, float(config.GREEN_TIME))
@@ -389,11 +384,9 @@ class CameraWorkflowTests(unittest.TestCase):
         self._run_signal(usad, 115.0, self._counts(LANE1=1))
         self._run_signal(usad, 119.0, self._counts())  # South goes green
         self.assertEqual(usad.current_active_lane, "LANE2")
-        self._run_signal(usad, 124.0, self._counts())  # South empty for its first 5s: cut to 5 more
+        self._run_signal(usad, 123.9, self._counts())
         self.assertEqual(usad.current_phase, "GREEN")
-        self._run_signal(usad, 128.9, self._counts())
-        self.assertEqual(usad.current_phase, "GREEN")
-        self._run_signal(usad, 129.0, self._counts())
+        self._run_signal(usad, 124.0, self._counts())  # South empty for its first 5s
         self.assertEqual(usad.current_phase, "YELLOW")
 
     def test_congestion_does_not_extend_but_picks_next_lane(self):

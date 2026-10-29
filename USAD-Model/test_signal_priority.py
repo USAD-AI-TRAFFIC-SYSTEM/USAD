@@ -91,7 +91,7 @@ class SignalPriorityTest(unittest.TestCase):
         with mock.patch.object(main.time, "time", return_value=100.0):
             usad._begin_green("LANE1", 100.0)
         west_busy = counts(LANE4=3)
-        t = self.run_cycle(usad, west_busy, 100.0, 10.5)  # North empty: 5s check + 5s more
+        t = self.run_cycle(usad, west_busy, 100.0, 5.5)  # North empty -> cut at 5s
         self.assertEqual(usad.current_phase, "YELLOW")
         self.run_cycle(usad, west_busy, t, 4.5)
         self.assertEqual((usad.current_active_lane, usad.current_phase), ("LANE4", "GREEN"))
@@ -125,39 +125,26 @@ class SignalPriorityTest(unittest.TestCase):
         self.run_cycle(usad, counts(LANE1=1), 100.0, 8.0)
         self.assertEqual(usad.current_phase, "GREEN")
 
-    def test_empty_lane_starts_at_15_then_cut_to_5_more(self):
+    def test_empty_lane_cut_to_yellow_after_5s(self):
         usad = make_usad()
         with mock.patch.object(main.time, "time", return_value=100.0):
             usad._begin_green("LANE3", 100.0)
         self.assertEqual(usad.lane_green_duration, 15.0)
         t = self.run_cycle(usad, counts(), 100.0, 4.5)
-        self.assertEqual(usad.lane_green_duration, 15.0)  # still within the check window
-        t = self.run_cycle(usad, counts(), t, 1.0)  # 5s passed with no car
-        self.assertEqual(usad.lane_green_duration, 10.0)  # 5s elapsed + 5s left
         self.assertEqual(usad.current_phase, "GREEN")
-        t = self.run_cycle(usad, counts(), t, 4.4)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.run_cycle(usad, counts(), t, 1.0)
+        self.run_cycle(usad, counts(), t, 1.0)  # 5s with no car -> yellow (10s left)
         self.assertEqual(usad.current_phase, "YELLOW")
 
-    def test_car_returning_after_cut_restores_full_green(self):
+    def test_car_in_window_then_leaves_waits_3s_below_10_left(self):
         usad = make_usad()
         with mock.patch.object(main.time, "time", return_value=100.0):
             usad._begin_green("LANE3", 100.0)
-        t = self.run_cycle(usad, counts(), 100.0, 6.0)
-        self.assertEqual(usad.lane_green_duration, 10.0)
-        self.run_cycle(usad, counts(LANE3=1), t, 5.0)
-        self.assertEqual(usad.lane_green_duration, 15.0)
+        t = self.run_cycle(usad, counts(LANE3=1), 100.0, 7.0)   # car present: no cut at 5s
         self.assertEqual(usad.current_phase, "GREEN")
-
-    def test_car_in_check_window_extends_to_full_green(self):
-        usad = make_usad()
-        with mock.patch.object(main.time, "time", return_value=100.0):
-            usad._begin_green("LANE3", 100.0)
-        t = self.run_cycle(usad, counts(), 100.0, 3.0)
-        t = self.run_cycle(usad, counts(LANE3=1), t, 8.0)
-        self.assertEqual(usad.lane_green_duration, 15.0)
+        t = self.run_cycle(usad, counts(), t, 2.5)               # car leaves at 107, empty 2.5s
         self.assertEqual(usad.current_phase, "GREEN")
+        self.run_cycle(usad, counts(), t, 1.0)                   # empty 3s while <=10 left
+        self.assertEqual(usad.current_phase, "YELLOW")
 
     def test_can_be_disabled(self):
         usad = make_usad()
