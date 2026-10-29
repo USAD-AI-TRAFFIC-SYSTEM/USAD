@@ -40,6 +40,18 @@ export function getLogExportUrl(type: LogType, search = ""): string {
   return `${API_BASE}/api/logs/export/${type}${q ? `?q=${encodeURIComponent(q)}` : ""}`;
 }
 
+export function getAnalyticsExportUrl(): string {
+  return `${API_BASE}/api/analytics/export`;
+}
+
+/** Start a download of a server-generated attachment (works in the desktop window too). */
+export function downloadFile(url: string) {
+  const a = Object.assign(document.createElement("a"), { href: url });
+  document.body.appendChild(a);
+  a.click();
+  a.remove();
+}
+
 export async function fetchLogs(
   type: LogType
 ): Promise<Record<string, string>[]> {

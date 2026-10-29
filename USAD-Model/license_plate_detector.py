@@ -58,8 +58,15 @@ class LicensePlateDetector:
         self.reader = None
         if self.ocr_available:
             try:
-                # Initialize EasyOCR reader for English text (CPU mode)
-                self.reader = easyocr.Reader(['en'], gpu=False)
+                # Initialize EasyOCR reader for English text (CPU mode). The
+                # packaged app ships its models, so it never downloads them.
+                model_dir = getattr(config, "EASYOCR_MODEL_DIR", None)
+                if model_dir:
+                    self.reader = easyocr.Reader(
+                        ['en'], gpu=False, model_storage_directory=model_dir, download_enabled=False
+                    )
+                else:
+                    self.reader = easyocr.Reader(['en'], gpu=False)
                 print("[LicensePlateDetector] EasyOCR initialized with CPU multi-threading")
             except Exception as e:
                 print(f"Failed to initialize EasyOCR: {e}")

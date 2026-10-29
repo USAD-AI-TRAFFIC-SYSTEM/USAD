@@ -21,6 +21,12 @@ def _get_runtime_dir():
 # Resolve the USAD root
 _USAD_ROOT = _get_runtime_dir()
 
+# EasyOCR model files bundled into the EXE by build_app.py, so a new PC does
+# not need internet on first start. None when running from source (EasyOCR
+# then uses its own ~/.EasyOCR/model folder and downloads models if missing).
+_bundled_models = _os.path.join(_get_asset_dir(), "easyocr_models")
+EASYOCR_MODEL_DIR = _bundled_models if getattr(_sys, 'frozen', False) and _os.path.isdir(_bundled_models) else None
+
 
 # ── Arduino auto-detection ───────────────────────────────────────────────────
 def _detect_arduino_port(fallback=None):
@@ -131,36 +137,41 @@ DEFAULT_INTERSECTION_CENTER = [(480, 195), (720, 190), (720, 420), (480, 420)]
 LANES = {
     "LANE1": {  # North
         "name": "North",
-        "region": [(538, 11), (726, 10), (716, 223), (523, 215)],
-        "stop_line": [(523, 215), (716, 223)],
+        "region": [(569, 16), (760, 24), (736, 238), (545, 232)],
+        "stop_line": [(545, 232), (736, 238)],
         "direction": "vertical",
         "arduino_cmd": "LANE1"
     },
     "LANE2": {  # South
         "name": "South",
-        "region": [(471, 691), (711, 701), (717, 418), (501, 415)],
-        "stop_line": [(501, 415), (717, 418)],
+        "region": [(459, 693), (709, 715), (718, 411), (529, 408)],
+        "stop_line": [(529, 408), (718, 411)],
         "direction": "vertical",
         "arduino_cmd": "LANE2"
     },
     "LANE3": {  # East
         "name": "East",
-        "region": [(973, 211), (988, 422), (717, 418), (716, 223)],
-        "stop_line": [(716, 223), (717, 418)],
+        "region": [(1002, 241), (1005, 426), (718, 411), (736, 238)],
+        "stop_line": [(736, 238), (718, 411)],
         "direction": "horizontal",
         "arduino_cmd": "LANE3"
     },
     "LANE4": {  # West
         "name": "West",
-        "region": [(273, 214), (245, 407), (501, 415), (523, 215)],
-        "stop_line": [(523, 215), (501, 415)],
+        "region": [(296, 211), (254, 404), (529, 408), (545, 232)],
+        "stop_line": [(545, 232), (529, 408)],
         "direction": "horizontal",
         "arduino_cmd": "LANE4"
     },
 }
 
 # Intersection center
-INTERSECTION_CENTER = [(523, 215), (716, 223), (717, 418), (501, 415)]
+INTERSECTION_CENTER = [(545, 232), (736, 238), (718, 411), (529, 408)]
+
+# Traffic light zones: (x, y, width, height) boxes in 1280x720 coordinates.
+# Detection ignores these areas so a lit traffic light is never counted as a
+# car. Set them in the Lane Calibrator ("Add Traffic Light").
+TRAFFIC_LIGHT_ZONES = [(451, 358, 69, 89), (721, 387, 62, 73), (486, 117, 64, 112), (747, 130, 59, 106)]
 
 # ── Load lane calibration overrides (from exe runtime) ────────────────────────
 def _load_lane_overrides():
@@ -181,27 +192,34 @@ def _load_lane_overrides():
         if inter:
             global INTERSECTION_CENTER
             INTERSECTION_CENTER = [tuple(p) for p in inter]
+        zones = data.get("traffic_light_zones")
+        if zones is not None:
+            global TRAFFIC_LIGHT_ZONES
+            TRAFFIC_LIGHT_ZONES = [tuple(int(v) for v in z) for z in zones]
     except Exception:
         pass
 
 _load_lane_overrides()
 
 # Timing (seconds)
-GREEN_TIME = 10   # seconds
+GREEN_TIME = 15   # seconds (longest a green can last)
 YELLOW_TIME = 4   # seconds
 RED_TIME = 30
 
-# Adaptive timing
-MIN_GREEN_TIME = 10
-MAX_GREEN_TIME = 30
-# A lane with at least this many cars is CONGESTED; 1 car up to one below
-# this is NON-CONGESTED; 0 cars is EMPTY. Used by both the lane status
-# display and the signal logic.
+# Adaptive timing: lanes go green in the normal order, each for up to
+# GREEN_TIME, and an empty lane's green is cut early (then yellow, next lane):
+# 1) For the first EMPTY_LANE_CHECK_SECONDS the lane is watched; if no car
+#    shows up at all, the green is cut there.
+# 2) Once the countdown is at EMPTY_GAP_CHECK_FROM_REMAINING seconds or less,
+#    the green is cut when the lane has been empty for EMPTY_GAP_SECONDS in a
+#    row (counted from when the lane emptied; a car showing up resets it).
+EMPTY_LANE_CHECK_SECONDS = 5
+EMPTY_GAP_CHECK_FROM_REMAINING = 10
+EMPTY_GAP_SECONDS = 3
+# Lane status display only: a lane with at least this many cars is shown as
+# CONGESTED, 1 car up to one below this as NON-CONGESTED, 0 cars as EMPTY.
+# Congestion does not change the signal order or green length.
 CONGESTION_THRESHOLD = 2
-
-# Signal adjustments
-ADAPTIVE_GREEN_EXTEND_SECONDS = 10  # extra seconds for congested lanes
-ADAPTIVE_GREEN_REDUCE_SECONDS = 5  # reduce seconds for non-congested lanes
 
 # Fallback
 SIMULATE_SIGNALS_WHEN_NO_ARDUINO = True
@@ -228,9 +246,12 @@ CAR_COLOR_RANGES = [
     # Blue
     ((85, 75, 35), (145, 255, 255)),
 
-    # Red (two ranges; hue wraps)
-    ((0, 75, 35), (18, 255, 255)),
-    ((162, 75, 35), (180, 255, 255)),
+    # Red (two ranges; hue wraps). Saturation starts at 150 because skin is a
+    # low-saturation red-orange: measured on the live setup, the red toy car
+    # is ~250 saturation and hands ~100-150, so hands no longer count as cars.
+    # If a red car goes undetected in glare, lower 150 a little (not below ~130).
+    ((0, 150, 35), (10, 255, 255)),
+    ((165, 150, 35), (180, 255, 255)),
 
 ]
 
@@ -323,8 +344,33 @@ CAR_LENGTH_RANGE_PX = (80, 140)
 CAR_WIDTH_RANGE_PX = (45, 80)
 # Widens both ranges by this fraction (0.25 -> 25% smaller/larger) so small
 # changes in camera height do not make cars disappear. If you move the camera
-# a lot higher or lower, read the BOX W/H overlay and update the ranges above.
+# a lot higher or lower, use Calibration > Car Size (or edit the ranges above).
 CAR_SIZE_TOLERANCE = 0.25
+
+# The packaged app cannot edit this file, so the Car Size calibrator saves to
+# detection_config.json next to the EXE, which overrides the values above.
+DETECTION_CONFIG_PATH = _os.path.join(_get_runtime_dir(), "detection_config.json")
+
+
+def _load_detection_overrides():
+    if not _os.path.exists(DETECTION_CONFIG_PATH):
+        return
+    try:
+        import json as _json
+        with open(DETECTION_CONFIG_PATH, "r", encoding="utf-8") as f:
+            saved = _json.load(f)
+        global CAR_LENGTH_RANGE_PX, CAR_WIDTH_RANGE_PX, CAR_SIZE_TOLERANCE
+        if "car_length_range_px" in saved:
+            CAR_LENGTH_RANGE_PX = tuple(int(v) for v in saved["car_length_range_px"])
+        if "car_width_range_px" in saved:
+            CAR_WIDTH_RANGE_PX = tuple(int(v) for v in saved["car_width_range_px"])
+        if "car_size_tolerance" in saved:
+            CAR_SIZE_TOLERANCE = float(saved["car_size_tolerance"])
+    except Exception:
+        pass
+
+
+_load_detection_overrides()
 
 # Orientation-independent box constraints. Set a maximum to 0 to disable it.
 # These correspond to the L/W pixel values drawn beside every detected vehicle.

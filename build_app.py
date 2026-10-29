@@ -20,7 +20,7 @@ project_root = Path(__file__).parent
 usad_model = project_root / "USAD-Model"
 icon_file = project_root / "Logo 1.ico"
 dist_folder = project_root / "dist"
-runtime_entries = ("logs", "camera_config.json", "lane_config.json")
+runtime_entries = ("logs", "camera_config.json", "lane_config.json", "detection_config.json")
 
 
 def backup_runtime_data(backup_folder):
@@ -57,6 +57,50 @@ if not icon_file.exists():
 else:
     icon_arg = str(icon_file)
     print(f"✓ Using icon: {icon_file}")
+
+def torchvision_extension_args():
+    """Bundle torchvision's compiled extensions (e.g. _C_stable.pyd).
+
+    torchvision >= 0.29 loads them by file path, which PyInstaller's
+    torchvision hook (written for the old _C module) misses, and
+    --collect-binaries skips .pyd files. Without them EasyOCR fails at
+    startup with "operator torchvision::nms does not exist".
+    """
+    import importlib.util
+
+    spec = importlib.util.find_spec("torchvision")
+    if spec is None or not spec.origin:
+        return []
+    package_dir = Path(spec.origin).parent
+    return [f"--add-binary={pyd};torchvision" for pyd in sorted(package_dir.glob("*.pyd"))]
+
+
+EASYOCR_MODEL_FILES = ("craft_mlt_25k.pth", "english_g2.pth")
+
+
+def easyocr_model_args():
+    """Bundle EasyOCR's English models so the EXE never downloads them.
+
+    EasyOCR keeps its models in ~/.EasyOCR/model. If they are not there yet
+    (fresh build machine), let EasyOCR download them once now.
+    """
+    model_dir = Path.home() / ".EasyOCR" / "model"
+    if not all((model_dir / name).is_file() for name in EASYOCR_MODEL_FILES):
+        print("Downloading EasyOCR models for bundling (one time, ~95 MB)...")
+        try:
+            import easyocr
+            easyocr.Reader(["en"], gpu=False, verbose=False)
+        except Exception as e:
+            print(f"⚠️  Could not download EasyOCR models: {e}")
+
+    missing = [name for name in EASYOCR_MODEL_FILES if not (model_dir / name).is_file()]
+    if missing:
+        print(f"⚠️  EasyOCR models not bundled (missing {', '.join(missing)}); "
+              "the EXE will download them on its first start")
+        return []
+    print(f"✓ Bundling EasyOCR models from {model_dir}")
+    return [f"--add-data={model_dir / name};easyocr_models" for name in EASYOCR_MODEL_FILES]
+
 
 # PyInstaller arguments  (Windows uses ; as --add-data separator)
 pyinstaller_args = [
@@ -104,6 +148,8 @@ pyinstaller_args = [
     "--collect-all=fastapi",
     "--collect-all=uvicorn",
     "--collect-all=easyocr",
+    *torchvision_extension_args(),
+    *easyocr_model_args(),
     "--collect-all=PIL",
     
     # Output directory

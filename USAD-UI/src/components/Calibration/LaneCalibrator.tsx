@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState, useCallback } from "react";
-import { Save, RotateCcw, Eye, EyeOff } from "lucide-react";
+import { Save, RotateCcw, Eye, EyeOff, Plus } from "lucide-react";
 import { getVideoFeedUrl } from "../../utils/api";
 
 interface Point {
@@ -15,9 +15,13 @@ interface LaneData {
   arduino_cmd: string;
 }
 
+/** Traffic light zone: [x, y, width, height] in camera coordinates. */
+type Zone = [number, number, number, number];
+
 interface LaneConfig {
   lanes: Record<string, LaneData>;
   intersection_center: [number, number][];
+  traffic_light_zones: Zone[];
   camera_width: number;
   camera_height: number;
 }
@@ -31,7 +35,9 @@ const LANE_COLORS: Record<string, string> = {
 
 const INTERSECTION_COLOR = "#a855f7"; // Purple
 const STOP_LINE_COLOR = "#eab308"; // Yellow
+const TRAFFIC_LIGHT_COLOR = "#f97316"; // Orange
 const HANDLE_RADIUS = 8;
+const MIN_ZONE_SIZE = 8;
 
 /**
  * Identifies which lane region points correspond to intersection corners.
@@ -81,9 +87,11 @@ export default function LaneCalibrator() {
   const [showOverlay, setShowOverlay] = useState(true);
   const [selectedLane, setSelectedLane] = useState<string | null>(null);
   const [dragging, setDragging] = useState<{
-    type: "intersection" | "outer" | "stop_line";
+    type: "intersection" | "outer" | "stop_line" | "zone_move" | "zone_resize";
     lane?: string;
     index: number;
+    /** Pointer position and zone rect when a zone drag started. */
+    grab?: { start: [number, number]; rect: Zone };
   } | null>(null);
   const [dirty, setDirty] = useState(false);
   const [imgSize, setImgSize] = useState({ width: 1280, height: 720 });
@@ -93,7 +101,7 @@ export default function LaneCalibrator() {
     fetch("/api/config/lanes")
       .then((r) => r.json())
       .then((data: LaneConfig) => {
-        setConfig(data);
+        setConfig({ ...data, traffic_light_zones: data.traffic_light_zones ?? [] });
         setImgSize({ width: data.camera_width, height: data.camera_height });
         setLoading(false);
       })
@@ -153,6 +161,44 @@ export default function LaneCalibrator() {
     setDragging({ type, lane, index });
   };
 
+  const handleZoneMouseDown = (e: React.MouseEvent, type: "zone_move" | "zone_resize", index: number) => {
+    if (!config || !svgRef.current) return;
+    e.preventDefault();
+    e.stopPropagation();
+    const rect = svgRef.current.getBoundingClientRect();
+    setDragging({
+      type,
+      index,
+      grab: {
+        start: toNative({ x: e.clientX - rect.left, y: e.clientY - rect.top }),
+        rect: [...config.traffic_light_zones[index]] as Zone,
+      },
+    });
+  };
+
+  const updateZones = (zones: Zone[]) => {
+    if (!config) return;
+    setConfig({ ...config, traffic_light_zones: zones });
+    setDirty(true);
+  };
+
+  const addZone = () => {
+    if (!config) return;
+    const w = 60;
+    const h = 30;
+    // Stagger new boxes so several added in a row don't stack exactly.
+    const offset = (config.traffic_light_zones.length % 5) * 20;
+    updateZones([
+      ...config.traffic_light_zones,
+      [Math.round(imgSize.width / 2 - w / 2 + offset), Math.round(imgSize.height / 2 - h / 2 + offset), w, h],
+    ]);
+  };
+
+  const removeZone = (index: number) => {
+    if (!config) return;
+    updateZones(config.traffic_light_zones.filter((_, i) => i !== index));
+  };
+
   const handleMouseMove = useCallback(
     (e: MouseEvent) => {
       if (!dragging || !config || !svgRef.current) return;
@@ -186,12 +232,21 @@ export default function LaneCalibrator() {
         newConfig.lanes[dragging.lane].region[outerIdx] = native;
       } else if (dragging.type === "stop_line" && dragging.lane) {
         newConfig.lanes[dragging.lane].stop_line[dragging.index] = native;
+      } else if ((dragging.type === "zone_move" || dragging.type === "zone_resize") && dragging.grab) {
+        const [x, y, w, h] = dragging.grab.rect;
+        const dx = native[0] - dragging.grab.start[0];
+        const dy = native[1] - dragging.grab.start[1];
+        const clamp = (v: number, lo: number, hi: number) => Math.max(lo, Math.min(hi, v));
+        newConfig.traffic_light_zones[dragging.index] =
+          dragging.type === "zone_move"
+            ? [clamp(x + dx, 0, imgSize.width - w), clamp(y + dy, 0, imgSize.height - h), w, h]
+            : [x, y, clamp(w + dx, MIN_ZONE_SIZE, imgSize.width - x), clamp(h + dy, MIN_ZONE_SIZE, imgSize.height - y)];
       }
 
       setConfig(newConfig);
       setDirty(true);
     },
-    [dragging, config, toNative]
+    [dragging, config, toNative, imgSize]
   );
 
   const handleMouseUp = useCallback(() => {
@@ -220,6 +275,7 @@ export default function LaneCalibrator() {
         body: JSON.stringify({
           lanes: config.lanes,
           intersection_center: config.intersection_center,
+          traffic_light_zones: config.traffic_light_zones,
         }),
       });
       const data = await res.json();
@@ -242,7 +298,8 @@ export default function LaneCalibrator() {
     fetch("/api/config/lanes/defaults")
       .then((r) => r.json())
       .then((data: LaneConfig) => {
-        setConfig(data);
+        // Reset covers lane geometry only; keep the marked traffic lights.
+        setConfig({ ...data, traffic_light_zones: config?.traffic_light_zones ?? [] });
         setDirty(true);
         setLoading(false);
       })
@@ -264,7 +321,7 @@ export default function LaneCalibrator() {
         <div className="flex items-center gap-3">
           <h2 className="text-sm font-bold text-gray-800">Lane Calibration</h2>
           <span className="text-xs text-gray-400">
-            Drag handles to adjust. Center corners move linked lanes.
+            Drag handles to adjust. Center corners move linked lanes. Orange boxes mark traffic lights (never detected as cars).
           </span>
           {dirty && (
             <span className="px-2 py-0.5 bg-amber-50 text-amber-700 text-[10px] font-semibold rounded-full ring-1 ring-amber-200">
@@ -290,6 +347,15 @@ export default function LaneCalibrator() {
               </button>
             ))}
           </div>
+
+          <button
+            onClick={addZone}
+            className="flex items-center gap-1 px-2.5 py-1.5 rounded-lg text-xs font-medium bg-orange-50 border border-orange-200 text-orange-600 hover:bg-orange-100 transition-all"
+            title="Mark a traffic light so it is never detected as a car"
+          >
+            <Plus className="w-3.5 h-3.5" />
+            Add Traffic Light
+          </button>
 
           <button
             onClick={() => setShowOverlay(!showOverlay)}
@@ -429,6 +495,63 @@ export default function LaneCalibrator() {
                 </g>
               );
             })()}
+
+            {/* Traffic light zones: drag to move, corner to resize, x to remove */}
+            {config.traffic_light_zones.map((zone, i) => {
+              const tl = toSvg([zone[0], zone[1]]);
+              const br = toSvg([zone[0] + zone[2], zone[1] + zone[3]]);
+              return (
+                <g key={`tl-${i}`}>
+                  <rect
+                    x={tl.x}
+                    y={tl.y}
+                    width={br.x - tl.x}
+                    height={br.y - tl.y}
+                    fill={TRAFFIC_LIGHT_COLOR}
+                    fillOpacity={0.25}
+                    stroke={TRAFFIC_LIGHT_COLOR}
+                    strokeWidth={2}
+                    cursor="move"
+                    onMouseDown={(e) => handleZoneMouseDown(e, "zone_move", i)}
+                  />
+                  <text
+                    x={tl.x}
+                    y={tl.y - 5}
+                    fill={TRAFFIC_LIGHT_COLOR}
+                    fontSize={11}
+                    fontWeight="bold"
+                    pointerEvents="none"
+                  >
+                    Traffic light {i + 1}
+                  </text>
+                  <rect
+                    x={br.x - 5}
+                    y={br.y - 5}
+                    width={10}
+                    height={10}
+                    fill="white"
+                    stroke={TRAFFIC_LIGHT_COLOR}
+                    strokeWidth={2}
+                    cursor="nwse-resize"
+                    onMouseDown={(e) => handleZoneMouseDown(e, "zone_resize", i)}
+                  />
+                  <g
+                    cursor="pointer"
+                    onMouseDown={(e) => {
+                      e.preventDefault();
+                      e.stopPropagation();
+                      removeZone(i);
+                    }}
+                  >
+                    <title>Remove traffic light zone</title>
+                    <circle cx={br.x + 2} cy={tl.y - 2} r={7} fill="#ef4444" stroke="white" strokeWidth={1.5} />
+                    <text x={br.x + 2} y={tl.y + 1.5} textAnchor="middle" fill="white" fontSize={10} fontWeight="bold">
+                      ×
+                    </text>
+                  </g>
+                </g>
+              );
+            })}
           </svg>
         )}
       </div>
@@ -448,6 +571,11 @@ export default function LaneCalibrator() {
         {!selectedLane && (
           <span>
             Intersection: {config.intersection_center.map((p) => `(${p[0]},${p[1]})`).join(" ")} | Drag purple corners to reshape the cross.
+          </span>
+        )}
+        {config.traffic_light_zones.length > 0 && (
+          <span>
+            Traffic lights: {config.traffic_light_zones.map((z) => `(${z[0]},${z[1]} ${z[2]}x${z[3]})`).join(" ")}
           </span>
         )}
       </div>

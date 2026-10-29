@@ -9,6 +9,7 @@ Endpoints:
   POST /api/control/{action}    Engine commands
   GET  /api/logs/{log_type}     CSV log data
   GET  /api/logs/export/{type}  Log download as .xlsx
+  GET  /api/analytics/export    Full analytics report as .xlsx
 """
 
 import asyncio
@@ -16,6 +17,7 @@ import csv
 import io
 import json
 import os
+import re
 import signal
 import sys
 import threading
@@ -163,7 +165,6 @@ def _build_telemetry() -> dict:
         "software_auto_mode": usad.software_auto_mode,
         "current_active_lane": usad.current_active_lane,
         "current_phase": usad.current_phase,
-        "pending_congested_lane": getattr(usad, "_pending_congested_lane", None),
         "phase_time_remaining": round(remaining, 1),
         "total_vehicles": sum(lane_counts_int.values()),
         "lane_counts": lane_counts_int,
@@ -413,35 +414,33 @@ _LOG_EXPORTS = {
 }
 
 
-def _build_log_workbook(filename: str, sheet_title: str, query: str = "") -> bytes:
-    """Render a CSV log as an .xlsx workbook, keeping rows that match query."""
-    from openpyxl import Workbook
+_XLSX_MEDIA_TYPE = "application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+_HEADER_COLOR = "F97316"
+
+
+def _read_log(filename: str) -> tuple[list[str], list[dict]]:
+    """Return (columns, rows) of a CSV log; empty when the log is missing."""
+    filepath = os.path.join(config.LOG_DIRECTORY, filename)
+    if not os.path.isfile(filepath):
+        return [], []
+    with open(filepath, newline="", encoding="utf-8") as f:
+        reader = csv.DictReader(f)
+        return list(reader.fieldnames or []), list(reader)
+
+
+def _style_header(cell):
     from openpyxl.styles import Font, PatternFill
+
+    cell.font = Font(bold=True, color="FFFFFF")
+    cell.fill = PatternFill("solid", fgColor=_HEADER_COLOR)
+
+
+def _write_log_sheet(ws, columns: list[str], rows: list[dict]):
+    """Write log rows to a worksheet with a styled, filterable header."""
     from openpyxl.utils import get_column_letter
 
-    columns: list[str] = []
-    rows: list[dict] = []
-    filepath = os.path.join(config.LOG_DIRECTORY, filename)
-    if os.path.isfile(filepath):
-        with open(filepath, newline="", encoding="utf-8") as f:
-            reader = csv.DictReader(f)
-            columns = list(reader.fieldnames or [])
-            rows = list(reader)
-
-    q = query.strip().lower()
-    if q:
-        rows = [r for r in rows if any(q in str(v).lower() for v in r.values())]
-
-    wb = Workbook()
-    ws = wb.active
-    ws.title = sheet_title[:31]
-
-    header_font = Font(bold=True, color="FFFFFF")
-    header_fill = PatternFill("solid", fgColor="F97316")
     for col_idx, name in enumerate(columns, start=1):
-        cell = ws.cell(row=1, column=col_idx, value=name.replace("_", " ").title())
-        cell.font = header_font
-        cell.fill = header_fill
+        _style_header(ws.cell(row=1, column=col_idx, value=name.replace("_", " ").title()))
 
     for row_idx, record in enumerate(rows, start=2):
         for col_idx, name in enumerate(columns, start=1):
@@ -459,9 +458,192 @@ def _build_log_workbook(filename: str, sheet_title: str, query: str = "") -> byt
         ws.freeze_panes = "A2"
         ws.auto_filter.ref = ws.dimensions
 
+
+def _workbook_bytes(wb) -> bytes:
     buffer = io.BytesIO()
     wb.save(buffer)
     return buffer.getvalue()
+
+
+def _build_log_workbook(filename: str, sheet_title: str, query: str = "") -> bytes:
+    """Render a CSV log as an .xlsx workbook, keeping rows that match query."""
+    from openpyxl import Workbook
+
+    columns, rows = _read_log(filename)
+    q = query.strip().lower()
+    if q:
+        rows = [r for r in rows if any(q in str(v).lower() for v in r.values())]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = sheet_title[:31]
+    _write_log_sheet(ws, columns, rows)
+    return _workbook_bytes(wb)
+
+
+# ── Analytics report ─────────────────────────────────────────────────────────
+# These breakdowns mirror the dashboard charts in USAD-UI/src/components/Dashboard
+# so the downloaded report matches what is shown on screen.
+
+def _extract_hour(timestamp: str) -> Optional[int]:
+    try:
+        num = float(timestamp)
+        if num > 1_000_000_000:
+            return time.localtime(num).tm_hour
+    except ValueError:
+        pass
+    match = re.search(r"(\d{2}):\d{2}", timestamp)
+    return int(match.group(1)) if match else None
+
+
+def _incidents_by_hour(violations: list[dict], accidents: list[dict]) -> list[list]:
+    table = [[f"{h:02d}:00", 0, 0] for h in range(24)]
+    for col, records in ((1, violations), (2, accidents)):
+        for r in records:
+            hour = _extract_hour(r.get("timestamp") or r.get("time") or "")
+            if hour is not None and 0 <= hour < 24:
+                table[hour][col] += 1
+    return table
+
+
+def _violations_by_lane(violations: list[dict]) -> list[list]:
+    counts: dict[str, int] = {}
+    for r in violations:
+        lane = (r.get("lane") or r.get("lane_key") or "UNKNOWN").upper()
+        counts[lane] = counts.get(lane, 0) + 1
+    return [
+        [config.LANES.get(lane, {}).get("name", lane.title()), n]
+        for lane, n in counts.items()
+    ]
+
+
+def _vehicle_types(traffic: list[dict]) -> list[list]:
+    counts = {"SMALL": 0, "MEDIUM": 0, "LARGE": 0, "UNKNOWN": 0}
+    for r in traffic:
+        vtype = (r.get("vehicle_type") or "UNKNOWN").upper()
+        counts[vtype] = counts.get(vtype, 0) + 1
+    return sorted(([k.title(), n] for k, n in counts.items()), key=lambda row: -row[1])
+
+
+def _accident_durations(accidents: list[dict]) -> list[list]:
+    buckets = {"0s (instant)": 0, "< 1s": 0, "1-5s": 0, "> 5s": 0}
+    for r in accidents:
+        try:
+            d = float(r.get("duration") or 0)
+        except ValueError:
+            d = 0.0
+        if d == 0:
+            buckets["0s (instant)"] += 1
+        elif d < 1:
+            buckets["< 1s"] += 1
+        elif d <= 5:
+            buckets["1-5s"] += 1
+        else:
+            buckets["> 5s"] += 1
+    return [[name, n] for name, n in buckets.items()]
+
+
+def _types(records: list[dict], field: str) -> list[list]:
+    counts: dict[str, int] = {}
+    for r in records:
+        name = (r.get(field) or r.get("type") or "UNKNOWN").replace("_", " ")
+        counts[name] = counts.get(name, 0) + 1
+    return sorted(([k, n] for k, n in counts.items()), key=lambda row: -row[1])
+
+
+def _build_analytics_workbook() -> bytes:
+    """Summary sheet (KPIs + breakdowns with charts) plus every log as a sheet."""
+    from openpyxl import Workbook
+    from openpyxl.chart import BarChart, PieChart, Reference
+    from openpyxl.styles import Font
+
+    logs = {key: _read_log(filename) for key, (filename, _title) in _LOG_EXPORTS.items()}
+    violations = logs["violations"][1]
+    accidents = logs["accidents"][1]
+    traffic = logs["traffic"][1]
+
+    wb = Workbook()
+    ws = wb.active
+    ws.title = "Summary"
+    ws.column_dimensions["A"].width = 30
+    ws.column_dimensions["B"].width = 14
+    ws.column_dimensions["C"].width = 14
+
+    ws["A1"] = "USAD Traffic Analytics Report"
+    ws["A1"].font = Font(bold=True, size=16, color=_HEADER_COLOR)
+    ws["A2"] = f"Generated {time.strftime('%Y-%m-%d %H:%M')}"
+    ws["A2"].font = Font(italic=True, color="6B7280")
+
+    kpis = [
+        ("Total Violations", len(violations)),
+        ("Total Accidents", len(accidents)),
+        ("Emergency Alerts", sum(
+            1 for a in accidents if (a.get("emergency_notified") or "").lower() == "yes"
+        )),
+        ("Traffic Events", len(traffic)),
+    ]
+    for header_col, label in ((1, "Metric"), (2, "Count")):
+        _style_header(ws.cell(row=4, column=header_col, value=label))
+    for offset, (label, value) in enumerate(kpis, start=5):
+        ws.cell(row=offset, column=1, value=label)
+        ws.cell(row=offset, column=2, value=value)
+
+    chart_rows = 17  # rows reserved so a chart never overlaps the next section
+    next_row = 5 + len(kpis) + 2
+
+    def add_section(title: str, headers: list[str], rows: list[list], kind: str = "bar"):
+        nonlocal next_row
+        start = next_row
+        ws.cell(row=start, column=1, value=title).font = Font(bold=True, size=12)
+        for col_idx, header in enumerate(headers, start=1):
+            _style_header(ws.cell(row=start + 1, column=col_idx, value=header))
+        for row_offset, row in enumerate(rows, start=start + 2):
+            for col_idx, value in enumerate(row, start=1):
+                ws.cell(row=row_offset, column=col_idx, value=value)
+        last = start + 1 + len(rows)
+
+        if rows and any(any(v for v in row[1:]) for row in rows):
+            chart = PieChart() if kind == "pie" else BarChart()
+            chart.title = title
+            chart.height, chart.width = 7.5, 15
+            data = Reference(ws, min_col=2, max_col=len(headers), min_row=start + 1, max_row=last)
+            labels = Reference(ws, min_col=1, min_row=start + 2, max_row=last)
+            chart.add_data(data, titles_from_data=True)
+            chart.set_categories(labels)
+            if kind == "bar":
+                chart.y_axis.title = "Count"
+                chart.y_axis.majorGridlines = None
+                if len(headers) == 2:
+                    chart.legend = None
+            ws.add_chart(chart, f"E{start}")
+            next_row = max(last + 2, start + chart_rows)
+        else:
+            ws.cell(row=last + 1, column=1, value="No data yet").font = Font(italic=True, color="9CA3AF")
+            next_row = last + 3
+
+    add_section("Incidents by Hour", ["Hour", "Violations", "Accidents"],
+                _incidents_by_hour(violations, accidents))
+    add_section("Violations by Lane", ["Lane", "Violations"], _violations_by_lane(violations), kind="pie")
+    add_section("Vehicle Types (Traffic Events)", ["Vehicle Type", "Events"], _vehicle_types(traffic))
+    add_section("Accident Duration", ["Duration", "Accidents"], _accident_durations(accidents))
+    add_section("Violation Types", ["Type", "Violations"], _types(violations, "violation_type"))
+    add_section("Accident Types", ["Type", "Accidents"], _types(accidents, "accident_type"))
+
+    for key, (_filename, title) in _LOG_EXPORTS.items():
+        _write_log_sheet(wb.create_sheet(title[:31]), *logs[key])
+
+    return _workbook_bytes(wb)
+
+
+@app.get("/api/analytics/export")
+async def analytics_export():
+    data = await asyncio.to_thread(_build_analytics_workbook)
+    download_name = f"usad_analytics_{time.strftime('%Y-%m-%d_%H%M')}.xlsx"
+    return Response(
+        content=data,
+        media_type=_XLSX_MEDIA_TYPE,
+        headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
+    )
 
 
 @app.get("/api/logs/export/{log_type}")
@@ -473,7 +655,7 @@ async def logs_export(log_type: str, q: str = ""):
     download_name = f"{log_type}_logs_{time.strftime('%Y-%m-%d_%H%M')}.xlsx"
     return Response(
         content=data,
-        media_type="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+        media_type=_XLSX_MEDIA_TYPE,
         headers={"Content-Disposition": f'attachment; filename="{download_name}"'},
     )
 
@@ -627,9 +809,100 @@ async def get_lane_config():
     return {
         "lanes": lanes,
         "intersection_center": list(config.INTERSECTION_CENTER),
+        "traffic_light_zones": [list(z) for z in getattr(config, "TRAFFIC_LIGHT_ZONES", [])],
         "camera_width": config.CAMERA_WIDTH,
         "camera_height": config.CAMERA_HEIGHT,
     }
+
+
+def _car_size_payload() -> dict:
+    return {
+        "length_range": list(config.CAR_LENGTH_RANGE_PX),
+        "width_range": list(config.CAR_WIDTH_RANGE_PX),
+        "tolerance": float(config.CAR_SIZE_TOLERANCE),
+        "camera_width": config.CAMERA_WIDTH,
+        "camera_height": config.CAMERA_HEIGHT,
+    }
+
+
+@app.get("/api/config/car-size")
+async def get_car_size():
+    """Car size range (pixels) that counts as a vehicle."""
+    return _car_size_payload()
+
+
+@app.post("/api/config/car-size")
+async def save_car_size(payload: dict):
+    """Save the car size range from the Car Size calibrator."""
+    try:
+        length = tuple(int(round(float(v))) for v in payload["length_range"])
+        width = tuple(int(round(float(v))) for v in payload["width_range"])
+        tolerance = round(float(payload.get("tolerance", config.CAR_SIZE_TOLERANCE)), 2)
+    except (KeyError, TypeError, ValueError):
+        return JSONResponse({"ok": False, "error": "Sizes must be numbers."}, 400)
+
+    if len(length) != 2 or len(width) != 2:
+        return JSONResponse({"ok": False, "error": "Each range needs a min and a max."}, 400)
+    if not (0 < length[0] <= length[1]) or not (0 < width[0] <= width[1]):
+        return JSONResponse({"ok": False, "error": "Each minimum must be above 0 and not larger than its maximum."}, 400)
+    if width[1] > length[1]:
+        return JSONResponse({"ok": False, "error": "Car width (short side) cannot exceed car length (long side)."}, 400)
+    if not (0.0 <= tolerance <= 0.9):
+        return JSONResponse({"ok": False, "error": "Tolerance must be between 0% and 90%."}, 400)
+
+    def persist():
+        with _engine_lock:
+            if getattr(sys, "frozen", False):
+                path = Path(config.DETECTION_CONFIG_PATH)
+                temp_path = path.with_suffix(".tmp")
+                temp_path.write_text(json.dumps({
+                    "car_length_range_px": list(length),
+                    "car_width_range_px": list(width),
+                    "car_size_tolerance": tolerance,
+                }, indent=2), encoding="utf-8")
+                os.replace(temp_path, path)
+            else:
+                config_path = _THIS_DIR / "config.py"
+                content = config_path.read_text(encoding="utf-8")
+                for name, value in (
+                    ("CAR_LENGTH_RANGE_PX", length),
+                    ("CAR_WIDTH_RANGE_PX", width),
+                    ("CAR_SIZE_TOLERANCE", tolerance),
+                ):
+                    content, replaced = re.subn(
+                        rf"(?m)^{name}\s*=\s*[^\r\n#]*",
+                        lambda _m, n=name, v=value: f"{n} = {v}",
+                        content,
+                        count=1,
+                    )
+                    if not replaced:
+                        raise RuntimeError(f"{name} not found in config.py")
+                config_path.write_text(content, encoding="utf-8")
+
+            # Detection reads these every frame, so they apply immediately.
+            config.CAR_LENGTH_RANGE_PX = length
+            config.CAR_WIDTH_RANGE_PX = width
+            config.CAR_SIZE_TOLERANCE = tolerance
+
+    try:
+        await asyncio.to_thread(persist)
+    except (OSError, RuntimeError) as e:
+        return JSONResponse({"ok": False, "error": f"Could not save car size: {e}"}, 500)
+    return {"ok": True, **_car_size_payload()}
+
+
+def _clean_traffic_light_zones(zones) -> list[tuple[int, int, int, int]]:
+    """Validate (x, y, w, h) zones and clamp them to the camera frame."""
+    width, height = int(config.CAMERA_WIDTH), int(config.CAMERA_HEIGHT)
+    cleaned = []
+    for zone in zones:
+        x, y, w, h = (int(round(float(v))) for v in zone)
+        x = max(0, min(width - 1, x))
+        y = max(0, min(height - 1, y))
+        w = max(1, min(width - x, w))
+        h = max(1, min(height - y, h))
+        cleaned.append((x, y, w, h))
+    return cleaned
 
 
 @app.get("/api/config/lanes/defaults")
@@ -654,14 +927,24 @@ async def get_lane_defaults():
 
 @app.post("/api/config/lanes")
 async def save_lane_config(payload: dict):
-    """Save new lane polygons, stop lines, and intersection center to config.py."""
+    """Save lane polygons, stop lines, intersection center, and traffic light zones."""
     import re
 
     lanes_data = payload.get("lanes", {})
     intersection_data = payload.get("intersection_center", None)
+    zones_data = payload.get("traffic_light_zones", None)
 
-    if not lanes_data and not intersection_data:
+    if not lanes_data and not intersection_data and zones_data is None:
         return JSONResponse({"ok": False, "error": "No data provided"}, 400)
+
+    zones = None
+    if zones_data is not None:
+        try:
+            zones = _clean_traffic_light_zones(zones_data)
+        except (TypeError, ValueError):
+            return JSONResponse(
+                {"ok": False, "error": "Traffic light zones must be [x, y, width, height] numbers."}, 400
+            )
 
     # Determine where to save: when frozen (exe), save a JSON override file next to exe.
     # When running from source, write directly to config.py.
@@ -695,6 +978,10 @@ async def save_lane_config(payload: dict):
             inter = [list(p) for p in intersection_data]
             override_data["intersection_center"] = inter
             config.INTERSECTION_CENTER = [tuple(p) for p in intersection_data]
+
+        if zones is not None:
+            override_data["traffic_light_zones"] = [list(z) for z in zones]
+            config.TRAFFIC_LIGHT_ZONES = zones
 
         override_path.write_text(json.dumps(override_data, indent=2), encoding="utf-8")
         return {"ok": True, "message": "Lane configuration saved (override file)"}
@@ -788,6 +1075,20 @@ async def save_lane_config(payload: dict):
 
         # Update runtime config
         config.INTERSECTION_CENTER = inter
+
+    if zones is not None:
+        zones_str = f"TRAFFIC_LIGHT_ZONES = {zones}"
+        content, replaced = re.subn(
+            r"(?m)^TRAFFIC_LIGHT_ZONES\s*=\s*\[[^\r\n]*\]",
+            lambda _m: zones_str,
+            content,
+            count=1,
+        )
+        if not replaced:
+            marker = content.find("# ── Load lane calibration overrides")
+            if marker != -1:
+                content = content[:marker] + zones_str + "\n\n" + content[marker:]
+        config.TRAFFIC_LIGHT_ZONES = zones
 
     config_path.write_text(content, encoding="utf-8")
 

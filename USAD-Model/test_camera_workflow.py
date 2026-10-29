@@ -44,6 +44,19 @@ class FakeCapture:
 
 
 class CameraWorkflowTests(unittest.TestCase):
+    def setUp(self):
+        timing = {
+            "GREEN_TIME": 15,
+            "YELLOW_TIME": 4,
+            "EMPTY_LANE_CHECK_SECONDS": 5,
+            "EMPTY_GAP_CHECK_FROM_REMAINING": 10,
+            "EMPTY_GAP_SECONDS": 3,
+        }
+        for name, value in timing.items():
+            patcher = mock.patch.object(config, name, value)
+            patcher.start()
+            self.addCleanup(patcher.stop)
+
     @staticmethod
     def _signal_controller(active_lane="LANE1", phase="GREEN", start=100.0, duration=10.0):
         usad = main.USAD.__new__(main.USAD)
@@ -53,7 +66,7 @@ class CameraWorkflowTests(unittest.TestCase):
         usad.lane_green_duration = duration
         usad.software_auto_mode = True
         usad.arduino_connected = False
-        usad._pending_congested_lane = None
+        usad._car_seen_this_green = False
         usad._is_arduino_connected = mock.Mock(return_value=False)
         usad._apply_signal_states = mock.Mock()
         usad._sync_arduino = mock.Mock()
@@ -129,7 +142,9 @@ class CameraWorkflowTests(unittest.TestCase):
         cv2.rectangle(frame, (205, 65), (264, 169), (15, 25, 190), -1)
         # Dark windows break up each colored surface before morphological closing.
         cv2.rectangle(frame, (58, 84), (91, 115), (25, 25, 25), -1)
-        cv2.rectangle(frame, (215, 100), (254, 134), (25, 25, 25), -1)
+        # Window reaches the side so the outline is not a perfect rectangle
+        # (real cars are not; near-perfect rectangles are rejected by extent).
+        cv2.rectangle(frame, (215, 100), (264, 134), (25, 25, 25), -1)
         rng = np.random.default_rng(913)
         grain = rng.normal(0, 11, frame.shape).astype(np.int16)
         frame = np.clip(frame.astype(np.int16) + grain, 0, 255).astype(np.uint8)
@@ -186,6 +201,32 @@ class CameraWorkflowTests(unittest.TestCase):
             VehicleDetector._bbox_supported_by_roi(mask, (60, 70, 100, 60), (90, 100))
         )
 
+    def test_hand_is_not_detected_as_a_red_car(self):
+        def detect(hsv_color):
+            frame = np.full((240, 320, 3), 35, dtype=np.uint8)
+            bgr = cv2.cvtColor(np.uint8([[hsv_color]]), cv2.COLOR_HSV2BGR)[0, 0].tolist()
+            cv2.rectangle(frame, (40, 60), (139, 109), bgr, -1)
+            cv2.rectangle(frame, (70, 60), (100, 72), (35, 35, 35), -1)
+            with mock.patch.object(config, "REQUIRE_INTERSECTION_ROI_FOR_DETECTION", False):
+                return VehicleDetector()._detect_by_color(frame)
+
+        # Medians measured on the live setup: skin vs the red toy car.
+        self.assertEqual(detect((5, 113, 110)), [])
+        self.assertEqual(len(detect((176, 253, 134))), 1)
+
+    def test_traffic_light_zone_is_never_detected_as_a_car(self):
+        frame = np.full((240, 320, 3), 35, dtype=np.uint8)
+        # Car-sized red blob, e.g. a lit light plus its glow.
+        cv2.rectangle(frame, (40, 60), (139, 109), (20, 20, 210), -1)
+        # Notch so the outline is not a perfect rectangle (those are rejected as non-cars).
+        cv2.rectangle(frame, (70, 60), (100, 72), (35, 35, 35), -1)
+
+        with mock.patch.object(config, "REQUIRE_INTERSECTION_ROI_FOR_DETECTION", False):
+            with mock.patch.object(config, "TRAFFIC_LIGHT_ZONES", []):
+                self.assertEqual(len(VehicleDetector()._detect_by_color(frame)), 1)
+            with mock.patch.object(config, "TRAFFIC_LIGHT_ZONES", [(30, 50, 120, 70)]):
+                self.assertEqual(VehicleDetector()._detect_by_color(frame), [])
+
     def test_roi_mask_follows_lane_recalibration(self):
         detector = VehicleDetector()
         frame = np.zeros((720, 1280, 3), dtype=np.uint8)
@@ -237,6 +278,22 @@ class CameraWorkflowTests(unittest.TestCase):
             self.assertFalse(detector._passes_shape_filters(rectangle(55, 30), 55, 30, 1650.0))
             self.assertFalse(detector._passes_shape_filters(rectangle(180, 100), 180, 100, 18000.0))
 
+    def test_default_area_limits_are_unchanged(self):
+        from vehicle_detector import vehicle_area_bounds
+        self.assertEqual(vehicle_area_bounds(), (config.MIN_VEHICLE_AREA, config.MAX_VEHICLE_AREA))
+
+    def test_calibrated_large_car_is_not_blocked_by_area_limit(self):
+        detector = VehicleDetector()
+        contour = np.array([[[0, 0]], [[200, 0]], [[200, 120]], [[0, 120]]], dtype=np.int32)
+        with (
+            mock.patch.object(config, "MAX_VEHICLE_EXTENT", 1.0),
+            mock.patch.object(config, "CAR_LENGTH_RANGE_PX", (150, 210)),
+            mock.patch.object(config, "CAR_WIDTH_RANGE_PX", (90, 125)),
+        ):
+            # 24000 px^2 is above MAX_VEHICLE_AREA (20000) but matches the calibrated size.
+            self.assertTrue(detector._passes_shape_filters(contour, 200, 120, 24000.0))
+            self.assertTrue(detector._is_allowed_vehicle_type(24000.0))
+
     def test_diagonal_car_passes_size_constraints(self):
         detector = VehicleDetector()
         # A 110x55 car rotated 45 degrees: its axis-aligned box is ~117x117.
@@ -247,125 +304,117 @@ class CameraWorkflowTests(unittest.TestCase):
         self.assertGreater(min(w, h), 100)
         self.assertTrue(detector._passes_shape_filters(contour, w, h, area))
 
-    def test_congestion_waits_for_green_and_yellow_before_handoff(self):
-        usad = self._signal_controller()
-        counts = {"LANE1": 0, "LANE2": 0, "LANE3": 3, "LANE4": 0}
+    def _run_signal(self, usad, t, counts):
+        with mock.patch.object(main.time, "time", return_value=t):
+            usad.update_traffic_control(counts, [])
+            usad.update_signal_cycle(counts)
 
-        usad.update_traffic_control(counts, [])
-        self.assertEqual(usad._pending_congested_lane, "LANE3")
+    @staticmethod
+    def _counts(**cars):
+        counts = {lane: 0 for lane in config.LANES}
+        counts.update(cars)
+        return counts
+
+    def _timed_controller(self):
+        """A 15 s green that started at t=100 (countdown 15 at 100, 10 at 105, 0 at 115)."""
+        return self._signal_controller(active_lane="LANE1", duration=15.0)
+
+    def test_empty_lane_green_is_cut_after_the_check_window(self):
+        usad = self._timed_controller()
+        empty = self._counts()
+
+        self._run_signal(usad, 104.9, empty)
+        self.assertEqual(usad.current_phase, "GREEN")
+
+        # 15 ... 10 and still no car: cut, without counting down to 0.
+        self._run_signal(usad, 105.0, empty)
         self.assertEqual(usad.current_active_lane, "LANE1")
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 10.0)
-
-        with mock.patch.object(main.time, "time", return_value=109.9):
-            usad.update_signal_cycle(counts)
-        self.assertEqual(usad.current_phase, "GREEN")
-
-        with mock.patch.object(main.time, "time", return_value=110.0):
-            usad.update_signal_cycle(counts)
-        self.assertEqual(usad.current_active_lane, "LANE1")
         self.assertEqual(usad.current_phase, "YELLOW")
 
-        with mock.patch.object(main.time, "time", return_value=114.0):
-            usad.update_signal_cycle(counts)
-        self.assertEqual(usad.current_active_lane, "LANE3")
+        # Yellow is kept, then the normal order continues.
+        self._run_signal(usad, 109.0, empty)
+        self.assertEqual(usad.current_active_lane, "LANE2")
         self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 20)
-        self.assertIsNone(usad._pending_congested_lane)
+        self.assertEqual(usad.lane_green_duration, float(config.GREEN_TIME))
 
-    def test_cleared_congestion_does_not_shorten_active_green(self):
-        usad = self._signal_controller(active_lane="LANE3", duration=20.0)
-        cleared = {lane: 0 for lane in config.LANES}
-
-        with mock.patch.object(main.time, "time", return_value=105.0):
-            usad.update_traffic_control(cleared, [])
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_active_lane, "LANE3")
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 20.0)
-
-        with mock.patch.object(main.time, "time", return_value=120.0):
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_active_lane, "LANE3")
+    def test_occupied_lane_keeps_the_full_green(self):
+        usad = self._timed_controller()
+        for t in (100.5, 105.0, 110.0, 114.9):
+            self._run_signal(usad, t, self._counts(LANE1=1))
+            self.assertEqual(usad.current_phase, "GREEN")
+        self._run_signal(usad, 115.0, self._counts(LANE1=1))
         self.assertEqual(usad.current_phase, "YELLOW")
 
-        with mock.patch.object(main.time, "time", return_value=124.0):
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_active_lane, "LANE4")
+    def test_lane_that_empties_late_is_cut_after_3s_empty(self):
+        usad = self._timed_controller()
+        self._run_signal(usad, 100.5, self._counts(LANE1=1))
+        self._run_signal(usad, 107.0, self._counts(LANE1=1))
+        self._run_signal(usad, 107.5, self._counts())  # car leaves at 7.5s left
+        self._run_signal(usad, 110.4, self._counts())
         self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, config.MIN_GREEN_TIME)
-
-    def test_active_lane_green_extends_while_congested_then_finishes(self):
-        usad = self._signal_controller(active_lane="LANE3", duration=10.0)
-        congested = {lane: 0 for lane in config.LANES}
-        congested["LANE3"] = 3
-
-        with mock.patch.object(main.time, "time", return_value=105.0):
-            usad.update_traffic_control(congested, [])
-            usad.update_signal_cycle(congested)
-        # The active lane is never queued against itself.
-        self.assertIsNone(usad._pending_congested_lane)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 10.0)
-
-        # Still congested when the green expires: the green is extended
-        # in place, without passing through yellow.
-        with mock.patch.object(main.time, "time", return_value=110.0):
-            usad.update_signal_cycle(congested)
-        self.assertEqual(usad.current_active_lane, "LANE3")
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 20.0)
-
-        # Congestion clears: the extended green is not cut short.
-        cleared = {lane: 0 for lane in config.LANES}
-        with mock.patch.object(main.time, "time", return_value=115.0):
-            usad.update_traffic_control(cleared, [])
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, 20.0)
-
-        # ...and it is not extended again once it runs out.
-        with mock.patch.object(main.time, "time", return_value=120.0):
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_active_lane, "LANE3")
+        self._run_signal(usad, 110.5, self._counts())  # empty for 3s
         self.assertEqual(usad.current_phase, "YELLOW")
 
-        with mock.patch.object(main.time, "time", return_value=124.0):
-            usad.update_signal_cycle(cleared)
-        self.assertEqual(usad.current_active_lane, "LANE4")
+    def test_empty_time_before_10s_left_counts(self):
+        usad = self._timed_controller()
+        self._run_signal(usad, 100.5, self._counts(LANE1=1))
+        self._run_signal(usad, 103.0, self._counts())  # car leaves at 12s left
+        # At 10s left the lane has been empty 2s: the 3s check has started
+        # but is not met yet.
+        self._run_signal(usad, 105.0, self._counts())
         self.assertEqual(usad.current_phase, "GREEN")
-
-    def test_congestion_extension_stops_at_max_green(self):
-        usad = self._signal_controller(active_lane="LANE3", duration=20.0)
-        congested = {lane: 0 for lane in config.LANES}
-        congested["LANE3"] = 3
-
-        with mock.patch.object(main.time, "time", return_value=120.0):
-            usad.update_signal_cycle(congested)
-        self.assertEqual(usad.current_phase, "GREEN")
-        self.assertEqual(usad.lane_green_duration, float(config.MAX_GREEN_TIME))
-
-        # At the cap the lane yields and the cycle moves on, even if the
-        # lane is still congested.
-        with mock.patch.object(main.time, "time", return_value=100.0 + config.MAX_GREEN_TIME):
-            usad.update_traffic_control(congested, [])
-            usad.update_signal_cycle(congested)
+        self._run_signal(usad, 106.0, self._counts())  # empty 3s: cut at 9s left
         self.assertEqual(usad.current_phase, "YELLOW")
 
-        with mock.patch.object(main.time, "time", return_value=104.0 + config.MAX_GREEN_TIME):
-            usad.update_signal_cycle(congested)
-        self.assertEqual(usad.current_active_lane, "LANE4")
+    def test_car_arriving_resets_the_empty_count(self):
+        usad = self._timed_controller()
+        self._run_signal(usad, 100.5, self._counts(LANE1=1))
+        self._run_signal(usad, 106.0, self._counts())
+        self._run_signal(usad, 108.0, self._counts(LANE1=1))  # a car shows up
+        self._run_signal(usad, 108.5, self._counts())
+        self._run_signal(usad, 111.0, self._counts())
         self.assertEqual(usad.current_phase, "GREEN")
+        self._run_signal(usad, 111.5, self._counts())  # 3s since 108.5
+        self.assertEqual(usad.current_phase, "YELLOW")
 
-    def test_manual_green_is_not_extended_by_congestion(self):
-        usad = self._signal_controller(active_lane="LANE3", duration=10.0)
+    def test_each_new_green_gets_a_fresh_check_window(self):
+        usad = self._timed_controller()
+        for t in (101.0, 110.0, 114.9):
+            self._run_signal(usad, t, self._counts(LANE1=1))
+        self._run_signal(usad, 115.0, self._counts(LANE1=1))
+        self._run_signal(usad, 119.0, self._counts())  # South goes green
+        self.assertEqual(usad.current_active_lane, "LANE2")
+        self._run_signal(usad, 123.9, self._counts())
+        self.assertEqual(usad.current_phase, "GREEN")
+        self._run_signal(usad, 124.0, self._counts())  # South empty for its first 5s
+        self.assertEqual(usad.current_phase, "YELLOW")
+
+    def test_congestion_does_not_extend_or_reorder_greens(self):
+        usad = self._timed_controller()
+        busy = self._counts(LANE1=3, LANE3=4)
+
+        self._run_signal(usad, 101.0, busy)
+        self.assertEqual(usad.lane_green_duration, 15.0)  # not extended
+        self._run_signal(usad, 115.0, busy)
+        self.assertEqual(usad.current_phase, "YELLOW")
+
+        # Normal order: South next, even though East is congested.
+        self._run_signal(usad, 119.0, busy)
+        self.assertEqual(usad.current_active_lane, "LANE2")
+        self.assertEqual(usad.lane_green_duration, float(config.GREEN_TIME))
+
+    def test_manual_green_is_cut_when_lane_empties(self):
+        usad = self._timed_controller()
+        usad.activate_lane("LANE2")
         usad.software_auto_mode = False
-        congested = {lane: 0 for lane in config.LANES}
-        congested["LANE3"] = 3
-
-        with mock.patch.object(main.time, "time", return_value=110.0):
-            usad.update_signal_cycle(congested)
+        usad.phase_start_time = 100.0
+        self._run_signal(usad, 101.0, self._counts(LANE2=1))  # car in South
+        self._run_signal(usad, 103.0, self._counts())  # car crossed
+        self._run_signal(usad, 105.9, self._counts())
+        self.assertEqual(usad.current_phase, "GREEN")
+        self._run_signal(usad, 106.0, self._counts())  # empty for 3s
         self.assertEqual(usad.current_phase, "YELLOW")
+        self.assertEqual(usad.current_active_lane, "LANE2")
 
     def test_manual_lane_override_cannot_stick_at_zero(self):
         usad = self._signal_controller(active_lane="LANE3", duration=10.0)
@@ -393,7 +442,7 @@ class CameraWorkflowTests(unittest.TestCase):
         self.assertTrue(usad.software_auto_mode)
         usad.traffic_controller.set_auto_mode.assert_called_once()
 
-    def test_congestion_display_and_signal_logic_share_one_threshold(self):
+    def test_congestion_display_uses_one_threshold(self):
         usad = self._signal_controller()
         with mock.patch.object(config, "CONGESTION_THRESHOLD", 3):
             self.assertEqual(usad._classify_lane_congestion(0), "EMPTY")

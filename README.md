@@ -14,7 +14,7 @@ It ingests a live video feed, detects and tracks vehicles, identifies dangerous 
 - **Emergency notifications** – Simulates SMS and phone-call style notifications to a configurable hotline (default `911`) for confirmed accidents, with cooldown control.
 - **E.Y.E. (Eyeing Your Encounter)** – Rule‑based violation detection for red‑light violations.
 - **License plate recognition (LPR)** – Uses EasyOCR in a dedicated worker thread so OCR never blocks the video loop, with template/Tesseract-based fallbacks and throttling to avoid frame drops.
-- **Adaptive traffic signal control** – Adjusts green time per lane based on measured congestion while honoring configurable minimum and maximum green durations.
+- **Adaptive traffic signal control** – Lanes go green in a fixed order; a lane with no cars during the first seconds of its green is cut short so the next lane can move sooner.
 - **Arduino integration with graceful fallback** – Controls a physical 4‑lane traffic light controller via serial on `config.ARDUINO_PORT` (default `COM5`); automatically switches to software‑simulated signals when Arduino is not available.
 - **Structured logging and analytics** – Logs all events, violations, accidents, and recognized license plates to CSV; supports summary analytics and simple text reports.
 
@@ -141,8 +141,7 @@ Most runtime behavior is controlled via `USAD-Model/config.py`:
   - `LANES` and `INTERSECTION_CENTER` polygons that define lane regions and the central box
 - **Traffic signal timing**
   - `GREEN_TIME`, `YELLOW_TIME`, `RED_TIME`
-  - `MIN_GREEN_TIME`, `MAX_GREEN_TIME`
-  - `ENABLE_ADAPTIVE_TIMING`, `CONGESTION_THRESHOLD`, `ADAPTIVE_GREEN_EXTEND_SECONDS`
+  - `ENABLE_ADAPTIVE_TIMING`, `EMPTY_LANE_CHECK_SECONDS`, `EMPTY_GAP_CHECK_FROM_REMAINING`, `EMPTY_GAP_SECONDS`, `CONGESTION_THRESHOLD` (display only)
 - **Arduino / controller**
   - `ARDUINO_PORT`, `ARDUINO_BAUDRATE`, `SIMULATE_SIGNALS_WHEN_NO_ARDUINO`
   - `AUTO_MODE_DEFAULT` (start in automatic lane cycling)
@@ -250,7 +249,7 @@ Signal timing is driven by parameters in `config.py`:
 
 - `GREEN_TIME` – Base green duration per lane (default 25 seconds)
 - `YELLOW_TIME` – Yellow duration (default 4 seconds)
-- `MIN_GREEN_TIME`, `MAX_GREEN_TIME` – Bounds for adaptive adjustments
+- `EMPTY_LANE_CHECK_SECONDS` – How long a green lane is watched for cars before an empty green is cut short
 
 The adaptive controller uses per‑lane vehicle counts to extend green time for congested lanes and shorten it for lightly loaded lanes, staying within these bounds while ensuring fair rotation.
 
@@ -292,7 +291,7 @@ The main OpenCV window renders a composite overlay on top of the camera feed:
 
 ### Adaptive traffic control
 
-- **Congestion‑aware green times** – Lanes with more vehicles receive longer greens; lightly loaded lanes use shorter phases within `MIN_GREEN_TIME` and `MAX_GREEN_TIME`.
+- **Empty-lane cut** – Every lane gets up to `GREEN_TIME`. If no car is seen in the lane during the first `EMPTY_LANE_CHECK_SECONDS` of its green, the green ends there. Once the countdown is at `EMPTY_GAP_CHECK_FROM_REMAINING` seconds or less, the green also ends when the lane has been empty for `EMPTY_GAP_SECONDS` in a row. Either way the light goes yellow and the next lane in order goes green.
 - **Accident resilience** – Accident detection can influence timing (e.g., extended clearance windows) depending on configuration.
 - **Fairness** – Round‑robin lane selection ensures that no lane starves even under asymmetrical demand.
 

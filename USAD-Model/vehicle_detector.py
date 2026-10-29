@@ -8,6 +8,44 @@ from typing import List, Tuple, Dict, Optional
 import time
 import config
 
+def vehicle_area_bounds() -> Tuple[float, float]:
+    """Contour-area limits for a car, widened to fit the calibrated car size.
+
+    MIN_VEHICLE_AREA / MAX_VEHICLE_AREA stay the defaults, but a car size set
+    in the Car Size calibrator must never be rejected by a stale area limit.
+    """
+    min_area = float(getattr(config, "MIN_VEHICLE_AREA", 0) or 0)
+    max_area = float(getattr(config, "MAX_VEHICLE_AREA", 0) or 0)
+    try:
+        tol = max(0.0, float(getattr(config, "CAR_SIZE_TOLERANCE", 0.0) or 0.0))
+        l_lo, l_hi = map(float, getattr(config, "CAR_LENGTH_RANGE_PX"))
+        w_lo, w_hi = map(float, getattr(config, "CAR_WIDTH_RANGE_PX"))
+    except Exception:
+        return min_area, max_area
+    min_extent = float(getattr(config, "MIN_VEHICLE_EXTENT", 0.25) or 0.25)
+    smallest = l_lo * w_lo * (1.0 - tol) ** 2 * min_extent
+    largest = l_hi * w_hi * (1.0 + tol) ** 2
+    if min_area > 0:
+        min_area = min(min_area, smallest)
+    if max_area > 0:
+        max_area = max(max_area, largest)
+    return min_area, max_area
+
+
+def classify_vehicle_area(area: float) -> str:
+    """Size class from config.VEHICLE_TYPES; areas beyond the table use the end class."""
+    types = list(getattr(config, "VEHICLE_TYPES", {}).items())
+    for vtype, (min_area, max_area) in types:
+        if float(min_area) <= float(area) <= float(max_area):
+            return str(vtype)
+    if types:
+        if float(area) < min(float(lo) for _t, (lo, _hi) in types):
+            return str(min(types, key=lambda t: float(t[1][0]))[0])
+        if float(area) > max(float(hi) for _t, (_lo, hi) in types):
+            return str(max(types, key=lambda t: float(t[1][1]))[0])
+    return "UNKNOWN"
+
+
 class Vehicle:
     """Represents a tracked vehicle."""
     
@@ -78,10 +116,7 @@ class Vehicle:
         
     def _classify_vehicle(self, area: float) -> str:
         """Classify vehicle by size"""
-        for vtype, (min_area, max_area) in config.VEHICLE_TYPES.items():
-            if min_area <= area <= max_area:
-                return vtype
-        return "UNKNOWN"
+        return classify_vehicle_area(area)
     
     def update(
         self,
@@ -698,6 +733,26 @@ class VehicleDetector:
         self._intersection_roi_mask: Optional[np.ndarray] = None
         self._intersection_roi_shape: Optional[tuple] = None
 
+        self._traffic_light_keep_mask: Optional[np.ndarray] = None
+        self._traffic_light_key: Optional[tuple] = None
+
+    def _apply_traffic_light_zones(self, mask: np.ndarray) -> np.ndarray:
+        """Blank out calibrated traffic light zones so a lit light is never a car."""
+        role = getattr(config, "get_camera_role", lambda _source=None: "vehicle_detection")()
+        zones = getattr(config, "TRAFFIC_LIGHT_ZONES", None) or []
+        if role != "vehicle_detection" or not zones:
+            return mask
+
+        h, w = mask.shape[:2]
+        key = (h, w, tuple(tuple(int(v) for v in z) for z in zones))
+        if self._traffic_light_keep_mask is None or self._traffic_light_key != key:
+            keep = np.full((h, w), 255, dtype=np.uint8)
+            for x, y, zw, zh in key[2]:
+                cv2.rectangle(keep, (x, y), (x + zw - 1, y + zh - 1), 0, -1)
+            self._traffic_light_keep_mask = keep
+            self._traffic_light_key = key
+        return cv2.bitwise_and(mask, self._traffic_light_keep_mask)
+
     @staticmethod
     def _is_track_displayable(vehicle: Vehicle, now_ts: Optional[float] = None) -> bool:
         """Whether a confirmed track has sufficiently recent visual evidence."""
@@ -987,7 +1042,7 @@ class VehicleDetector:
         except Exception:
             do_ws = True
 
-        min_piece_area = float(getattr(config, "MIN_VEHICLE_AREA", 0)) * 0.6
+        min_piece_area = vehicle_area_bounds()[0] * 0.6
 
         if do_ws:
             try:
@@ -1397,8 +1452,7 @@ class VehicleDetector:
 
         # Base area guard (kept here too so filters remain safe if callers change).
         try:
-            min_area = float(getattr(config, "MIN_VEHICLE_AREA", 0) or 0)
-            max_area = float(getattr(config, "MAX_VEHICLE_AREA", 0) or 0)
+            min_area, max_area = vehicle_area_bounds()
         except Exception:
             min_area, max_area = 0.0, 0.0
         if min_area > 0 and contour_area < min_area:
@@ -1524,12 +1578,9 @@ class VehicleDetector:
     def _classify_vehicle_area(area: float) -> str:
         """Classify a detection by area using config.VEHICLE_TYPES."""
         try:
-            for vtype, (min_area, max_area) in getattr(config, "VEHICLE_TYPES", {}).items():
-                if float(min_area) <= float(area) <= float(max_area):
-                    return str(vtype)
+            return classify_vehicle_area(area)
         except Exception:
-            pass
-        return "UNKNOWN"
+            return "UNKNOWN"
 
     @staticmethod
     def _is_allowed_vehicle_type(area: float) -> bool:
@@ -1580,6 +1631,9 @@ class VehicleDetector:
             kernel_close = cv2.getStructuringElement(cv2.MORPH_ELLIPSE, color_close_k)
             combined_mask = cv2.morphologyEx(combined_mask, cv2.MORPH_CLOSE, kernel_close)
 
+        # After closing, so a light's glow merged into a nearby car is cut off too.
+        combined_mask = self._apply_traffic_light_zones(combined_mask)
+
         # Save for presence checks.
         self._last_color_mask = combined_mask
 
@@ -1590,11 +1644,12 @@ class VehicleDetector:
 
         intersection_roi_mask = self._get_intersection_roi_mask(frame)
 
+        area_min, area_max = vehicle_area_bounds()
         detections: List[dict] = []
         for contour in contours:
             for c in self._split_contour_if_needed(combined_mask, contour):
                 area = cv2.contourArea(c)
-                if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
+                if not (area_min <= area <= area_max):
                     continue
 
                 # Optional broad size-category guard; color and ROI are the
@@ -1666,6 +1721,8 @@ class VehicleDetector:
         _, fg_mask = cv2.threshold(fg_mask, 200, 255, cv2.THRESH_BINARY)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_OPEN, self.kernel_open)
         fg_mask = cv2.morphologyEx(fg_mask, cv2.MORPH_CLOSE, self.kernel_close)
+        # A light switching color registers as motion; ignore it as well.
+        fg_mask = self._apply_traffic_light_zones(fg_mask)
 
         if getattr(config, "SHOW_FG_MASK", False):
             cv2.imshow("USAD - FG Mask", fg_mask)
@@ -1677,11 +1734,12 @@ class VehicleDetector:
         # Reject mostly-hollow motion blobs (common with background subtraction noise).
         fg_min_ratio = float(getattr(config, "FG_MASK_MIN_RATIO", 0.12) or 0.12)
 
+        area_min, area_max = vehicle_area_bounds()
         detections: List[dict] = []
         for contour in contours:
             for c in self._split_contour_if_needed(fg_mask, contour):
                 area = cv2.contourArea(c)
-                if not (config.MIN_VEHICLE_AREA <= area <= config.MAX_VEHICLE_AREA):
+                if not (area_min <= area <= area_max):
                     continue
 
                 # Optional broad size-category guard; motion alone is never
@@ -1925,7 +1983,7 @@ class VehicleDetector:
 
         min_ratio = float(getattr(config, "CAR_COLOR_MIN_RATIO", 0.0) or 0.0)
         # Make it harder for small/noisy blobs to spawn brand-new tracks.
-        base_min_area = float(getattr(config, "MIN_VEHICLE_AREA", 0) or 0)
+        base_min_area = vehicle_area_bounds()[0]
         new_area_scale = float(getattr(config, "NEW_TRACK_MIN_AREA_SCALE", 1.10) or 1.10)
         new_track_min_area = float(getattr(config, "NEW_TRACK_MIN_AREA", base_min_area * new_area_scale) or (base_min_area * new_area_scale))
         for det_idx, det in enumerate(detections):

@@ -472,7 +472,7 @@ USAD stands for **Urban Safety AI ADaptive**. It watches an intersection with a 
   `LANES` contains the shapes, stop lines, and human‑friendly names for each lane.
 
 - **Timing**  
-  `GREEN_TIME`, `YELLOW_TIME`, `MIN_GREEN_TIME`, `MAX_GREEN_TIME`
+  `GREEN_TIME`, `YELLOW_TIME`, `EMPTY_LANE_CHECK_SECONDS`
 
 - **Arduino**  
   `ARDUINO_PORT`, `ARDUINO_BAUDRATE`, `SIMULATE_SIGNALS_WHEN_NO_ARDUINO`

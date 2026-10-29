@@ -12,14 +12,16 @@ import AccidentDurationChart from "./components/Dashboard/AccidentDurationChart"
 import CategoryBreakdownChart from "./components/Dashboard/CategoryBreakdownChart";
 import LogTable from "./components/Dashboard/LogTable";
 import LaneCalibrator from "./components/Calibration/LaneCalibrator";
+import CarSizeCalibrator from "./components/Calibration/CarSizeCalibrator";
 import { useTelemetry } from "./hooks/useTelemetry";
 import { useKeyboardShortcuts } from "./hooks/useKeyboardShortcuts";
-import { fetchLogs, fetchSummary } from "./utils/api";
+import { downloadFile, fetchLogs, fetchSummary, getAnalyticsExportUrl } from "./utils/api";
 import {
   ShieldAlert,
   AlertTriangle,
   Phone,
   Activity,
+  Download,
 } from "lucide-react";
 
 export default function App() {
@@ -40,7 +42,7 @@ export default function App() {
         {activeTab === "live" ? (
           <LiveFeedView telemetry={telemetry} />
         ) : activeTab === "calibration" ? (
-          <LaneCalibrator />
+          <CalibrationView />
         ) : (
           <AnalyticsView />
         )}
@@ -62,6 +64,39 @@ function LiveFeedView({
       <FloatingHUD telemetry={telemetry} />
       <ActionDock />
       <AlertToast telemetry={telemetry} />
+    </div>
+  );
+}
+
+/* ── Calibration View ──────────────────────────────────────── */
+
+function CalibrationView() {
+  const [mode, setMode] = useState<"lanes" | "car-size">("lanes");
+  const modes = [
+    { id: "lanes", label: "Lanes & Traffic Lights" },
+    { id: "car-size", label: "Car Size" },
+  ] as const;
+
+  return (
+    <div className="h-full flex flex-col">
+      <div className="flex gap-1 px-4 pt-2 bg-white">
+        {modes.map((m) => (
+          <button
+            key={m.id}
+            onClick={() => setMode(m.id)}
+            className={`px-3 py-1.5 rounded-t-lg text-xs font-semibold transition-colors ${
+              mode === m.id
+                ? "bg-orange-50 text-orange-600 ring-1 ring-orange-200"
+                : "text-gray-500 hover:text-gray-700 hover:bg-gray-50"
+            }`}
+          >
+            {m.label}
+          </button>
+        ))}
+      </div>
+      <div className="flex-1 min-h-0">
+        {mode === "lanes" ? <LaneCalibrator /> : <CarSizeCalibrator />}
+      </div>
     </div>
   );
 }
@@ -98,6 +133,19 @@ function AnalyticsView() {
 
   return (
     <div className="h-full overflow-y-auto p-6 space-y-6 bg-gray-100">
+      {/* ── Header + Report Download ────────────────────────────── */}
+      <div className="flex items-center justify-between">
+        <h2 className="text-base font-bold text-gray-900">Traffic Analytics</h2>
+        <button
+          onClick={() => downloadFile(getAnalyticsExportUrl())}
+          title="Summary with charts plus every log, as one Excel file"
+          className="flex items-center gap-1.5 px-3 py-2 rounded-lg bg-orange-500 text-white text-xs font-semibold shadow-sm hover:bg-orange-600 transition-colors"
+        >
+          <Download className="w-3.5 h-3.5" />
+          Download Report (.xlsx)
+        </button>
+      </div>
+
       {/* ── 1. KPI Overview Cards ───────────────────────────────── */}
       <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
         <StatCard

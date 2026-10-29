@@ -1,6 +1,6 @@
 import { useState, useMemo } from "react";
 import { Search, Download, ChevronLeft, ChevronRight } from "lucide-react";
-import { getLogExportUrl, type LogType } from "../../utils/api";
+import { downloadFile, getLogExportUrl, type LogType } from "../../utils/api";
 
 interface LogTableProps {
   title: string;
@@ -30,14 +30,8 @@ export default function LogTable({ title, logType, records, columns }: LogTableP
   const totalPages = Math.max(1, Math.ceil(filtered.length / PAGE_SIZE));
   const pageData = filtered.slice(page * PAGE_SIZE, (page + 1) * PAGE_SIZE);
 
-  // The server builds the .xlsx (honoring the current search) and sends it as
-  // an attachment, which works in both browsers and the desktop window.
-  const handleExport = () => {
-    const a = Object.assign(document.createElement("a"), { href: getLogExportUrl(logType, search) });
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-  };
+  // The server builds the .xlsx, honoring the current search.
+  const handleExport = () => downloadFile(getLogExportUrl(logType, search));
 
   return (
     <div className="bg-white border border-gray-200 rounded-xl overflow-hidden shadow-sm">
